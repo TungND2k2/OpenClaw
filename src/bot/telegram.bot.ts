@@ -143,7 +143,7 @@ function splitMessage(text: string, maxLen: number): string[] {
 
 // ── User role from DB ────────────────────────────────────────
 
-function getUserRole(telegramUserId: string, tenantId: string): string {
+function getUserRole(telegramUserId: string, tenantId: string): string | null {
   const db = getDb();
   const row = db.select({ role: tenantUsers.role })
     .from(tenantUsers)
@@ -153,7 +153,7 @@ function getUserRole(telegramUserId: string, tenantId: string): string {
       eq(tenantUsers.channelUserId, telegramUserId),
       eq(tenantUsers.isActive, 1),
     )).get();
-  return row?.role ?? "user";
+  return row?.role ?? null; // null = not registered
 }
 
 // ── Job handler — processes one message through Commander ─────
@@ -241,6 +241,15 @@ async function pollLoop(): Promise<void> {
         const userName = msg.from.first_name ?? msg.from.username ?? "User";
         const userRole = getUserRole(userId, tenantId);
 
+        // ── Access control: only registered users ──
+        if (!userRole) {
+          console.error(`[Bot] ${userName}(${userId})[DENIED]: not registered`);
+          await sendTelegramMessage(msg.chat.id,
+            `⛔ Xin lỗi, bạn chưa được cấp quyền sử dụng Milo.\n\nVui lòng liên hệ admin để được thêm vào hệ thống.`
+          );
+          continue;
+        }
+
         // ── Handle file uploads ──
         const fileObj = msg.document ?? msg.photo?.at(-1) ?? msg.video ?? msg.audio ?? msg.voice;
         if (fileObj && getConfig().S3_BUCKET) {
@@ -257,7 +266,7 @@ async function pollLoop(): Promise<void> {
           chatId: msg.chat.id,
           userId,
           userName,
-          userRole,
+          userRole: userRole!,
           text: msg.text.trim(),
           tenantId,
           priority: userRole === "admin" ? 1 : userRole === "manager" ? 2 : 5,
@@ -346,7 +355,7 @@ async function handleFileUpload(
         chatId,
         userId,
         userName,
-        userRole: getUserRole(userId, tenantId),
+        userRole: getUserRole(userId, tenantId) ?? "user",
         text: `[File uploaded: ${fileName} (${mimeType}, ${sizeStr}) → ID: ${result.id}] ${caption}`,
         tenantId,
         priority: 3,
