@@ -1,4 +1,5 @@
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import mammoth from "mammoth";
 import { eq } from "drizzle-orm";
 import { getConfig } from "../../config.js";
 import { getDb } from "../../db/connection.js";
@@ -125,6 +126,58 @@ export async function downloadFile(fileId: string): Promise<{
     mimeType: file.mimeType,
     fileSize: file.fileSize,
   };
+}
+
+/**
+ * Read file content as text. Supports: TXT, CSV, JSON, DOCX, PDF (basic).
+ */
+export async function readFileContent(fileId: string): Promise<{
+  content: string;
+  fileName: string;
+  mimeType: string;
+  truncated: boolean;
+} | null> {
+  const db = getDb();
+  const file = db.select().from(files).where(eq(files.id, fileId)).get();
+  if (!file) return null;
+
+  const config = getConfig();
+  const client = getS3Client();
+
+  const response = await client.send(new GetObjectCommand({
+    Bucket: config.S3_BUCKET,
+    Key: file.s3Key,
+  }));
+
+  const bodyBytes = await response.Body?.transformToByteArray();
+  if (!bodyBytes) return null;
+  const buffer = Buffer.from(bodyBytes);
+
+  let content = "";
+  const mime = file.mimeType;
+
+  if (mime.startsWith("text/") || mime === "application/json" || mime === "application/csv") {
+    content = buffer.toString("utf-8");
+  } else if (mime.includes("wordprocessingml") || file.fileName.endsWith(".docx")) {
+    const result = await mammoth.extractRawText({ buffer });
+    content = result.value;
+  } else if (mime === "application/pdf") {
+    // Basic PDF text extraction — just look for text streams
+    const text = buffer.toString("utf-8");
+    const matches = text.match(/\(([^)]+)\)/g);
+    content = matches ? matches.map(m => m.slice(1, -1)).join(" ") : "[PDF content — cannot extract text without pdf-parse library]";
+  } else {
+    content = `[Binary file: ${file.fileName} (${file.mimeType}, ${file.fileSize} bytes)]`;
+  }
+
+  // Truncate to ~4000 chars to fit in LLM context
+  const MAX_LEN = 4000;
+  const truncated = content.length > MAX_LEN;
+  if (truncated) content = content.substring(0, MAX_LEN) + "\n\n... [truncated]";
+
+  console.error(`[S3] Read content: ${file.fileName} (${content.length} chars${truncated ? ", truncated" : ""})`);
+
+  return { content, fileName: file.fileName, mimeType: file.mimeType, truncated };
 }
 
 /**

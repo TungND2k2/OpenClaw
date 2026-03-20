@@ -23,7 +23,7 @@ import { notebookWrite, notebookRead, notebookList } from "../modules/notebooks/
 import { storeKnowledge, retrieveKnowledge } from "../modules/knowledge/knowledge.service.js";
 import { getDashboard } from "../modules/monitoring/monitor.service.js";
 import { startWorkflow } from "../modules/workflows/workflow-engine.service.js";
-import { getFile, listFiles } from "../modules/storage/s3.service.js";
+import { getFile, listFiles, readFileContent } from "../modules/storage/s3.service.js";
 import { getQueueMetrics } from "./telegram.bot.js";
 import {
   workflowTemplates, formTemplates, businessRules,
@@ -73,8 +73,9 @@ Available tools you can call (respond with tool_calls JSON):
 12. list_users() — List all tenant users with roles
 13. list_files(limit?) — List uploaded files
 14. get_file(file_id) — Get file details + S3 URL
-15. send_file(file_id) — Send a file back to user in chat (image/doc/video)
-16. respond(message) — Send a text response to the user (ALWAYS call this)
+15. read_file_content(file_id) — Read and extract text content from a file (DOCX, TXT, CSV, JSON). Use this to analyze/summarize files.
+16. send_file(file_id) — Send a file back to user in chat (image/doc/video)
+17. respond(message) — Send a text response to the user (ALWAYS call this)
 `;
 
 interface ToolCall {
@@ -84,7 +85,7 @@ interface ToolCall {
 
 // ── Execute tool calls ───────────────────────────────────────
 
-function executeTool(tool: string, args: Record<string, unknown>, tenantId: string): unknown {
+async function executeTool(tool: string, args: Record<string, unknown>, tenantId: string): Promise<unknown> {
   const db = getDb();
   const now = nowMs();
 
@@ -249,6 +250,12 @@ function executeTool(tool: string, args: Record<string, unknown>, tenantId: stri
         .all();
     }
 
+    case "read_file_content": {
+      const result = await readFileContent(args.file_id as string);
+      if (!result) return { error: "File not found or cannot read" };
+      return { fileName: result.fileName, mimeType: result.mimeType, content: result.content, truncated: result.truncated };
+    }
+
     case "send_file": {
       const file = getFile(args.file_id as string);
       if (!file) return { error: "File not found" };
@@ -272,7 +279,10 @@ function executeTool(tool: string, args: Record<string, unknown>, tenantId: stri
   }
 }
 
-// ── Commander LLM call ───────────────────────────────────────
+// ── Commander LLM call (Claude native tool use) ─────────────
+
+import { callClaude, callClaudeWithToolResults, isClaudeAvailable, type ToolCall as ClaudeToolCall } from "./llm-client.js";
+import type Anthropic from "@anthropic-ai/sdk";
 
 export interface CommanderResponse {
   text: string;
@@ -290,156 +300,80 @@ export async function processWithCommander(input: {
   aiConfig: Record<string, unknown>;
 }): Promise<CommanderResponse> {
   const _files: CommanderResponse["files"] = [];
-  const config = getConfig();
-  const apiBase = config.WORKER_API_BASE ?? config.COMMANDER_API_BASE;
-  const apiKey = config.WORKER_API_KEY ?? config.COMMANDER_API_KEY;
-  const model = config.WORKER_MODEL;
+  const startTime = Date.now();
 
-  if (!apiBase || !apiKey) {
-    return { text: "⚠️ Chưa cấu hình API. Liên hệ admin.", files: [] };
-  }
+  console.error(`[Pipeline] ─── START ───────────────────────────`);
+  console.error(`[Pipeline] User: ${input.userName} (${input.userRole})`);
+  console.error(`[Pipeline] Message: "${input.userMessage}"`);
+  console.error(`[Pipeline] Engine: Claude (native tool use)`);
+  console.error(`[Pipeline] History: ${input.conversationHistory.length} messages`);
 
   const systemPrompt = buildCommanderPrompt(input.tenantName, input.userName, input.userRole, input.aiConfig);
-
   const messages = [
-    { role: "system", content: systemPrompt },
     ...input.conversationHistory.slice(-15),
     { role: "user", content: input.userMessage },
   ];
 
-  const startTime = Date.now();
-  console.error(`[Pipeline] ─── START ───────────────────────────`);
-  console.error(`[Pipeline] User: ${input.userName} (${input.userRole})`);
-  console.error(`[Pipeline] Message: "${input.userMessage}"`);
-  console.error(`[Pipeline] Model: ${model} via ${apiBase}`);
-  console.error(`[Pipeline] History: ${input.conversationHistory.length} messages`);
-
   try {
-    console.error(`[Pipeline] → Calling LLM...`);
-    const llmStart = Date.now();
+    // Step 1: Call Claude
+    let response = await callClaude(systemPrompt, messages);
+    let fullText = response.text;
 
-    const response = await fetch(`${apiBase}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({ model, messages, max_tokens: 2048, temperature: 0.7 }),
-      signal: AbortSignal.timeout(60000),
-    });
+    // Step 2: Tool use loop — Claude may call tools, we execute and send results back
+    let loopCount = 0;
+    const MAX_LOOPS = 5;
 
-    const llmMs = Date.now() - llmStart;
+    // Build Anthropic message history for tool result follow-ups
+    let anthropicMessages: Anthropic.MessageParam[] = messages.map((m) => ({
+      role: (m.role === "assistant" ? "assistant" : "user") as "user" | "assistant",
+      content: m.content,
+    }));
 
-    if (!response.ok) {
-      const err = await response.text();
-      console.error(`[Pipeline] ✗ LLM error ${response.status} (${llmMs}ms): ${err.substring(0, 200)}`);
-      return { text: `⚠️ AI tạm thời không khả dụng (${response.status})`, files: [] };
-    }
+    while (response.toolCalls.length > 0 && loopCount < MAX_LOOPS) {
+      loopCount++;
+      console.error(`[Pipeline] Tool loop ${loopCount}/${MAX_LOOPS}: ${response.toolCalls.map(t => t.tool).join(", ")}`);
 
-    const data = await response.json() as any;
-    const choice = data.choices?.[0];
-    const content = choice?.message?.content ?? "";
-    const nativeToolCalls = choice?.message?.tool_calls;
-    const usage = data.usage;
+      // Build assistant message with tool use blocks
+      const assistantContent: any[] = [];
+      if (response.text) assistantContent.push({ type: "text", text: response.text });
+      for (const tc of response.toolCalls) {
+        assistantContent.push({ type: "tool_use", id: tc.id, name: tc.tool, input: tc.args });
+      }
+      anthropicMessages.push({ role: "assistant", content: assistantContent });
 
-    console.error(`[Pipeline] ✓ LLM responded (${llmMs}ms)${usage ? ` [tokens: ${usage.prompt_tokens}→${usage.completion_tokens}]` : ""}`);
-    if (content) console.error(`[Pipeline] Content: ${content.substring(0, 150)}${content.length > 150 ? "..." : ""}`);
+      // Execute tools and collect results
+      const toolResults: { toolUseId: string; result: string }[] = [];
 
-    // Parse tool calls — native OpenAI format first, fallback to text parsing
-    let toolCalls: ToolCall[] = [];
-
-    if (nativeToolCalls && Array.isArray(nativeToolCalls) && nativeToolCalls.length > 0) {
-      // Native OpenAI function calling
-      toolCalls = nativeToolCalls.map((tc: any) => ({
-        tool: tc.function.name,
-        args: typeof tc.function.arguments === "string"
-          ? JSON.parse(tc.function.arguments)
-          : tc.function.arguments,
-      }));
-      console.error(`[Pipeline] Native tool calls: ${toolCalls.map(t => t.tool).join(", ")}`);
-    } else {
-      // Fallback: parse from content text
-      toolCalls = parseToolCalls(content);
-    }
-
-    if (toolCalls.length === 0) {
-      console.error(`[Pipeline] No tool calls — text response only`);
-      console.error(`[Pipeline] ─── END (${Date.now() - startTime}ms) ────────────`);
-      return { text: markdownToHtml(content), files: _files };
-    }
-
-    console.error(`[Pipeline] Tool calls: ${toolCalls.map(t => t.tool).join(", ")}`);
-
-    // Execute tool calls
-    let responseMessage = "";
-    const toolResults: string[] = [];
-
-    for (const tc of toolCalls) {
-      if (tc.tool === "respond") {
-        responseMessage = tc.args.message as string;
-        console.error(`[Pipeline] → respond(): "${(responseMessage).substring(0, 80)}..."`);
-      } else {
+      for (const tc of response.toolCalls) {
         const toolStart = Date.now();
         console.error(`[Pipeline] → ${tc.tool}(${JSON.stringify(tc.args).substring(0, 120)})`);
-        const result = executeTool(tc.tool, tc.args, input.tenantId);
+
+        const result = await executeTool(tc.tool, tc.args, input.tenantId);
         const toolMs = Date.now() - toolStart;
         const resultStr = JSON.stringify(result);
-        toolResults.push(`${tc.tool}: ${resultStr}`);
-        console.error(`[Pipeline]   ✓ ${tc.tool} (${toolMs}ms): ${resultStr.substring(0, 120)}`);
+
+        console.error(`[Pipeline]   ✓ ${tc.tool} (${toolMs}ms): ${resultStr.substring(0, 150)}`);
+
+        toolResults.push({ toolUseId: tc.id, result: resultStr });
 
         // Collect files to send
         if (result && typeof result === "object" && (result as any).__send_file__) {
           _files.push({ url: (result as any).url, fileName: (result as any).fileName, mimeType: (result as any).mimeType });
         }
       }
+
+      // Send tool results back to Claude
+      response = await callClaudeWithToolResults(systemPrompt, anthropicMessages, toolResults);
+      fullText = response.text;
     }
 
-    // If we got tool results but no respond() call, do a follow-up
-    if (!responseMessage && toolResults.length > 0) {
-      console.error(`[Pipeline] → Follow-up LLM call to generate user message...`);
-      const fuStart = Date.now();
-      responseMessage = await followUp(apiBase, apiKey, model, systemPrompt, messages, toolResults);
-      console.error(`[Pipeline]   ✓ Follow-up (${Date.now() - fuStart}ms)`);
-    }
-
+    console.error(`[Pipeline] Final: "${fullText.substring(0, 100)}${fullText.length > 100 ? "..." : ""}"`);
     console.error(`[Pipeline] ─── END (${Date.now() - startTime}ms) ────────────`);
-    return { text: markdownToHtml(responseMessage || content), files: _files };
+
+    return { text: fullText, files: _files };
   } catch (e: any) {
     console.error(`[Pipeline] ✗ Error (${Date.now() - startTime}ms): ${e.message}`);
     return { text: `⚠️ Lỗi: ${e.message}`, files: _files };
-  }
-}
-
-// ── Follow-up call to generate user-facing message after tool execution ──
-
-async function followUp(
-  apiBase: string, apiKey: string, model: string,
-  systemPrompt: string, prevMessages: any[], toolResults: string[]
-): Promise<string> {
-  try {
-    const messages = [
-      ...prevMessages,
-      {
-        role: "assistant",
-        content: `Tôi đã thực thi các tool:\n${toolResults.join("\n")}\n\nBây giờ tôi sẽ thông báo kết quả cho user.`,
-      },
-      {
-        role: "user",
-        content: "Hãy tổng hợp kết quả và trả lời user bằng HTML format cho Telegram. Ngắn gọn, rõ ràng.",
-      },
-    ];
-
-    const res = await fetch(`${apiBase}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages, max_tokens: 1024, temperature: 0.5 }),
-      signal: AbortSignal.timeout(30000),
-    });
-
-    const data = await res.json() as any;
-    return data.choices?.[0]?.message?.content ?? "✅ Đã thực hiện xong.";
-  } catch {
-    return "✅ Đã thực hiện xong.";
   }
 }
 
@@ -451,56 +385,19 @@ function buildCommanderPrompt(
 ): string {
   const customInstructions = (aiConfig.system_prompt as string) ?? "";
 
-  return `Bạn là Commander AI của hệ thống OpenClaw, vận hành cho ${tenantName}.
-Bạn KHÔNG CHỈ chat — bạn có khả năng THỰC THI hành động thật sự bằng cách gọi tools.
+  return `Bạn là Commander AI của ${tenantName}, vận hành trên OpenClaw.
 
-USER: ${userName} | ROLE: ${userRole} | QUYỀN: ${userRole === "admin" || userRole === "manager" ? "ADMIN (tạo/sửa quy trình, tutorial, rules, quản lý user)" : "USER (sử dụng quy trình có sẵn)"}
+USER: ${userName} | ROLE: ${userRole} | QUYỀN: ${userRole === "admin" || userRole === "manager" ? "ADMIN — tạo/sửa quy trình, tutorial, rules, quản lý user" : "USER — sử dụng quy trình có sẵn"}
 
-${TOOL_DEFINITIONS}
+Bạn có tools để THỰC THI hành động thật. LUÔN dùng tools khi user yêu cầu xem/tạo/sửa dữ liệu — KHÔNG bịa dữ liệu, KHÔNG nói "sẽ kiểm tra" rồi không gọi tool.
 
-BẮT BUỘC — CÁCH GỌI TOOL:
-Khi cần thực hiện hành động, response của bạn PHẢI chứa block JSON như sau:
-\`\`\`tool_calls
-[{"tool":"tên_tool","args":{...}}]
-\`\`\`
-
-VÍ DỤ CỤ THỂ:
-
-User: "xem danh sách quy trình"
-→ Bạn trả lời:
-\`\`\`tool_calls
-[{"tool":"list_workflows","args":{}}]
-\`\`\`
-
-User: "liệt kê file tôi đã gửi"
-→ Bạn trả lời:
-\`\`\`tool_calls
-[{"tool":"list_files","args":{}}]
-\`\`\`
-
-User: "phân tích file cam_nang_sale"
-→ Bạn trả lời:
-\`\`\`tool_calls
-[{"tool":"list_files","args":{"limit":5}}]
-\`\`\`
-(Sau khi nhận kết quả, bạn sẽ dùng get_file để lấy chi tiết)
-
-User: "tạo quy trình chăm sóc khách hàng"
-→ Bạn trả lời:
-\`\`\`tool_calls
-[{"tool":"create_workflow","args":{"name":"Chăm sóc khách hàng","description":"Quy trình CSKH","domain":"support","stages":[{"id":"receive","name":"Tiếp nhận","type":"form"},{"id":"process","name":"Xử lý","type":"action"},{"id":"feedback","name":"Phản hồi","type":"notification"}]}}]
-\`\`\`
-
-User: "xin chào" hoặc câu hỏi đơn giản
-→ Trả lời text bình thường, KHÔNG cần tool_calls block.
-
-QUY TẮC:
-1. Khi user yêu cầu XEM/LIỆT KÊ dữ liệu → PHẢI gọi tool, KHÔNG bịa dữ liệu
-2. Khi user yêu cầu TẠO/LƯU gì đó → PHẢI gọi tool tương ứng
-3. Khi user hỏi về file → gọi list_files hoặc get_file
-4. Chỉ trả text thuần khi là câu hỏi/chào hỏi đơn giản
-5. KHÔNG BAO GIỜ nói "mình sẽ kiểm tra" rồi không làm gì — PHẢI gọi tool ngay
-6. Dùng HTML cho Telegram: <b>bold</b>, <i>italic</i>
+Quy tắc:
+• Xem quy trình → gọi list_workflows
+• Tạo quy trình → gọi create_workflow
+• Xem/phân tích file → gọi list_files → get_file hoặc read_file_content
+• Tạo tutorial → gọi save_tutorial
+• Câu hỏi đơn giản → trả lời text, không cần tool
+• Format: dùng markdown (bold, italic). Ngắn gọn, rõ ràng.
 
 ${customInstructions}`.trim();
 }
