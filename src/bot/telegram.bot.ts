@@ -143,9 +143,14 @@ function splitMessage(text: string, maxLen: number): string[] {
 
 // ── User role from DB ────────────────────────────────────────
 
-function getUserRole(telegramUserId: string, tenantId: string): string | null {
+interface UserInfo {
+  role: string | null;
+  displayName: string | null;
+}
+
+function getUserInfo(telegramUserId: string, tenantId: string): UserInfo {
   const db = getDb();
-  const row = db.select({ role: tenantUsers.role })
+  const row = db.select({ role: tenantUsers.role, displayName: tenantUsers.displayName })
     .from(tenantUsers)
     .where(and(
       eq(tenantUsers.tenantId, tenantId),
@@ -153,7 +158,19 @@ function getUserRole(telegramUserId: string, tenantId: string): string | null {
       eq(tenantUsers.channelUserId, telegramUserId),
       eq(tenantUsers.isActive, 1),
     )).get();
-  return row?.role ?? null; // null = not registered
+  return { role: row?.role ?? null, displayName: row?.displayName ?? null };
+}
+
+/** Update display name if changed (Telegram name can change anytime) */
+function syncUserName(telegramUserId: string, tenantId: string, newName: string): void {
+  const db = getDb();
+  db.update(tenantUsers)
+    .set({ displayName: newName, updatedAt: Date.now() })
+    .where(and(
+      eq(tenantUsers.tenantId, tenantId),
+      eq(tenantUsers.channel, "telegram"),
+      eq(tenantUsers.channelUserId, telegramUserId),
+    )).run();
 }
 
 // ── Job handler — processes one message through Commander ─────
@@ -238,12 +255,19 @@ async function pollLoop(): Promise<void> {
         if (!msg) continue;
 
         const userId = String(msg.from.id);
-        const userName = msg.from.first_name ?? msg.from.username ?? "User";
-        const userRole = getUserRole(userId, tenantId);
+        const telegramName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(" ") || msg.from.username || "User";
+        const userInfo = getUserInfo(userId, tenantId);
+        const userRole = userInfo.role;
+        const userName = userInfo.displayName ?? telegramName;
+
+        // Sync Telegram name to DB (if registered)
+        if (userRole && userInfo.displayName !== telegramName) {
+          syncUserName(userId, tenantId, telegramName);
+        }
 
         // ── Access control: only registered users ──
         if (!userRole) {
-          console.error(`[Bot] ${userName}(${userId})[DENIED]: not registered`);
+          console.error(`[Bot] ${telegramName}(${userId})[DENIED]: not registered`);
           await sendTelegramMessage(msg.chat.id,
             `⛔ Xin lỗi, bạn chưa được cấp quyền sử dụng Milo.\n\nVui lòng liên hệ admin để được thêm vào hệ thống.`
           );
@@ -355,7 +379,7 @@ async function handleFileUpload(
         chatId,
         userId,
         userName,
-        userRole: getUserRole(userId, tenantId) ?? "user",
+        userRole: getUserInfo(userId, tenantId).role ?? "user",
         text: `[File uploaded: ${fileName} (${mimeType}, ${sizeStr}) → ID: ${result.id}] ${caption}`,
         tenantId,
         priority: 3,
