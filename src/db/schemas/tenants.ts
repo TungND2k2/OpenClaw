@@ -46,6 +46,7 @@ export const tenantUsers = sqliteTable(
       .notNull()
       .default("user"),
     permissions: text("permissions", { mode: "json" }).default("[]"), // granular permissions
+    metadata: text("metadata", { mode: "json" }).default("{}"), // phone, position, etc.
     isActive: integer("is_active").notNull().default(1),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),

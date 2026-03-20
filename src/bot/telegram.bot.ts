@@ -161,8 +161,24 @@ function getUserInfo(telegramUserId: string, tenantId: string): UserInfo {
   return { role: row?.role ?? null, displayName: row?.displayName ?? null };
 }
 
-/** Auto-register new user with role "user" */
-function autoRegisterUser(telegramUserId: string, tenantId: string, displayName: string, username?: string): void {
+// ── Registration flow state (in-memory per user) ────────────
+
+interface RegistrationState {
+  step: "name" | "phone" | "position" | "confirm";
+  fullName?: string;
+  phone?: string;
+  position?: string;
+  telegramName: string;
+  telegramUsername?: string;
+}
+
+const _registrations = new Map<string, RegistrationState>(); // key: `${tenantId}:${userId}`
+
+/** Create pending registration (isActive=0) → admin must approve */
+function createPendingUser(
+  telegramUserId: string, tenantId: string,
+  data: { fullName: string; phone: string; position: string; telegramName: string; telegramUsername?: string }
+): string {
   const db = getDb();
   const existing = db.select({ id: tenantUsers.id }).from(tenantUsers)
     .where(and(
@@ -171,16 +187,78 @@ function autoRegisterUser(telegramUserId: string, tenantId: string, displayName:
       eq(tenantUsers.channelUserId, telegramUserId),
     )).get();
 
+  const meta = JSON.stringify({ phone: data.phone, position: data.position, telegramUsername: data.telegramUsername });
+  const id = existing?.id ?? newId();
+
   if (existing) {
-    // Re-activate if was deactivated
-    db.update(tenantUsers).set({ isActive: 1, displayName, updatedAt: Date.now() })
-      .where(eq(tenantUsers.id, existing.id)).run();
+    db.update(tenantUsers).set({
+      displayName: data.fullName, isActive: 0, updatedAt: Date.now(),
+      metadata: meta,
+    }).where(eq(tenantUsers.id, id)).run();
   } else {
     db.insert(tenantUsers).values({
-      id: newId(), tenantId, channel: "telegram", channelUserId: telegramUserId,
-      displayName, role: "user", isActive: 1, createdAt: Date.now(), updatedAt: Date.now(),
+      id, tenantId, channel: "telegram", channelUserId: telegramUserId,
+      displayName: data.fullName, role: "user", isActive: 0,
+      metadata: meta, createdAt: Date.now(), updatedAt: Date.now(),
     }).run();
   }
+  return id;
+}
+
+/** Get all admin/manager chat IDs for notifications */
+function getAdminChatIds(tenantId: string): string[] {
+  const db = getDb();
+  const rows = db.select({ channelUserId: tenantUsers.channelUserId })
+    .from(tenantUsers)
+    .where(and(
+      eq(tenantUsers.tenantId, tenantId),
+      eq(tenantUsers.channel, "telegram"),
+      eq(tenantUsers.isActive, 1),
+    )).all()
+    .filter(r => {
+      const role = db.select({ role: tenantUsers.role }).from(tenantUsers)
+        .where(and(
+          eq(tenantUsers.tenantId, tenantId),
+          eq(tenantUsers.channelUserId, r.channelUserId),
+        )).get();
+      return role?.role === "admin" || role?.role === "manager";
+    });
+  return rows.map(r => r.channelUserId);
+}
+
+/** Approve pending user */
+function approveUser(tenantId: string, channelUserId: string): boolean {
+  const db = getDb();
+  const result = db.update(tenantUsers).set({ isActive: 1, updatedAt: Date.now() })
+    .where(and(
+      eq(tenantUsers.tenantId, tenantId),
+      eq(tenantUsers.channel, "telegram"),
+      eq(tenantUsers.channelUserId, channelUserId),
+    )).run();
+  return result.changes > 0;
+}
+
+/** Reject pending user */
+function rejectUser(tenantId: string, channelUserId: string): boolean {
+  const db = getDb();
+  const result = db.delete(tenantUsers)
+    .where(and(
+      eq(tenantUsers.tenantId, tenantId),
+      eq(tenantUsers.channel, "telegram"),
+      eq(tenantUsers.channelUserId, channelUserId),
+      eq(tenantUsers.isActive, 0),
+    )).run();
+  return result.changes > 0;
+}
+
+/** List pending registrations */
+function getPendingUsers(tenantId: string): any[] {
+  const db = getDb();
+  return db.select().from(tenantUsers)
+    .where(and(
+      eq(tenantUsers.tenantId, tenantId),
+      eq(tenantUsers.isActive, 0),
+    )).all();
 }
 
 /** Update display name if changed (Telegram name can change anytime) */
@@ -287,22 +365,136 @@ async function pollLoop(): Promise<void> {
           syncUserName(userId, tenantId, telegramName);
         }
 
+        // ── Registration flow (multi-step) ──
+        const regKey = `${tenantId}:${userId}`;
+        const regState = _registrations.get(regKey);
+        if (regState && msg.text) {
+          const text = msg.text.trim();
+          if (text === "/cancel") {
+            _registrations.delete(regKey);
+            await sendTelegramMessage(msg.chat.id, "❌ Đã huỷ đăng ký.");
+            continue;
+          }
+
+          if (regState.step === "name") {
+            regState.fullName = text;
+            regState.step = "phone";
+            await sendTelegramMessage(msg.chat.id, "📱 Nhập <b>số điện thoại</b> của bạn:");
+          } else if (regState.step === "phone") {
+            regState.phone = text;
+            regState.step = "position";
+            await sendTelegramMessage(msg.chat.id, "💼 Nhập <b>vị trí / chức vụ</b> của bạn (VD: Sale, Marketing, Kế toán...):");
+          } else if (regState.step === "position") {
+            regState.position = text;
+            regState.step = "confirm";
+            await sendTelegramMessage(msg.chat.id,
+              `📋 <b>Xác nhận thông tin đăng ký:</b>\n\n` +
+              `👤 Họ tên: <b>${regState.fullName}</b>\n` +
+              `📱 SĐT: <b>${regState.phone}</b>\n` +
+              `💼 Vị trí: <b>${regState.position}</b>\n\n` +
+              `Gõ <b>OK</b> để gửi, hoặc /cancel để huỷ.`
+            );
+          } else if (regState.step === "confirm") {
+            if (text.toLowerCase() === "ok" || text.toLowerCase() === "xác nhận") {
+              // Save pending user
+              createPendingUser(userId, tenantId, {
+                fullName: regState.fullName!,
+                phone: regState.phone!,
+                position: regState.position!,
+                telegramName: regState.telegramName,
+                telegramUsername: regState.telegramUsername,
+              });
+              _registrations.delete(regKey);
+
+              await sendTelegramMessage(msg.chat.id,
+                `✅ Đã gửi yêu cầu đăng ký!\n\nVui lòng chờ admin duyệt. Milo sẽ thông báo khi tài khoản được kích hoạt.`
+              );
+
+              // Notify all admins
+              const adminIds = getAdminChatIds(tenantId);
+              for (const adminId of adminIds) {
+                await sendTelegramMessage(adminId,
+                  `🔔 <b>Yêu cầu đăng ký mới!</b>\n\n` +
+                  `👤 ${regState.fullName}\n` +
+                  `📱 ${regState.phone}\n` +
+                  `💼 ${regState.position}\n` +
+                  `🆔 Telegram: ${regState.telegramName} (@${regState.telegramUsername ?? "N/A"})\n\n` +
+                  `Để duyệt, gõ: <code>/approve ${userId}</code>\n` +
+                  `Để từ chối: <code>/reject ${userId}</code>`
+                );
+              }
+              console.error(`[Bot] ${regState.fullName}(${userId}) registration pending — admins notified`);
+            } else {
+              await sendTelegramMessage(msg.chat.id, "Gõ <b>OK</b> để xác nhận, hoặc /cancel để huỷ.");
+            }
+          }
+          continue;
+        }
+
         // ── Access control ──
         if (!userRole) {
-          // Auto-register on /start, reject otherwise
           if (msg.text?.trim() === "/start") {
-            autoRegisterUser(userId, tenantId, telegramName, msg.from.username);
-            console.error(`[Bot] ${telegramName}(${userId}) auto-registered as user`);
             await sendTelegramMessage(msg.chat.id,
-              `👋 Chào <b>${telegramName}</b>!\n\nMình là <b>Milo</b> — trợ lý AI. Bạn đã được đăng ký thành công.\n\nHãy hỏi mình bất kỳ điều gì!`
+              `👋 Chào <b>${telegramName}</b>!\n\nMình là <b>Milo</b> — trợ lý AI.\n\nGõ /register để đăng ký sử dụng.`
+            );
+          } else if (msg.text?.trim() === "/register") {
+            _registrations.set(regKey, { step: "name", telegramName, telegramUsername: msg.from.username });
+            await sendTelegramMessage(msg.chat.id,
+              `📝 <b>Đăng ký sử dụng Milo</b>\n\n👤 Nhập <b>họ và tên</b> của bạn:`
             );
           } else {
             console.error(`[Bot] ${telegramName}(${userId})[DENIED]: not registered`);
             await sendTelegramMessage(msg.chat.id,
-              `⛔ Xin lỗi, bạn chưa đăng ký.\n\nGõ /start để bắt đầu sử dụng Milo.`
+              `⛔ Bạn chưa đăng ký.\n\nGõ /register để đăng ký, hoặc /start để xem hướng dẫn.`
             );
           }
           continue;
+        }
+
+        // ── Admin commands: /approve, /reject, /pending ──
+        if ((userRole === "admin" || userRole === "manager") && msg.text) {
+          const approveMatch = msg.text.match(/^\/approve\s+(\d+)$/);
+          if (approveMatch) {
+            const targetId = approveMatch[1];
+            if (approveUser(tenantId, targetId)) {
+              await sendTelegramMessage(msg.chat.id, `✅ Đã duyệt user ${targetId}`);
+              // Notify the approved user
+              await sendTelegramMessage(targetId,
+                `🎉 <b>Tài khoản đã được duyệt!</b>\n\nChào mừng bạn đến với Milo. Hãy hỏi mình bất kỳ điều gì!`
+              );
+            } else {
+              await sendTelegramMessage(msg.chat.id, `❌ Không tìm thấy user ${targetId}`);
+            }
+            continue;
+          }
+
+          const rejectMatch = msg.text.match(/^\/reject\s+(\d+)$/);
+          if (rejectMatch) {
+            const targetId = rejectMatch[1];
+            if (rejectUser(tenantId, targetId)) {
+              await sendTelegramMessage(msg.chat.id, `❌ Đã từ chối user ${targetId}`);
+              await sendTelegramMessage(targetId,
+                `😔 Yêu cầu đăng ký của bạn đã bị từ chối. Liên hệ admin nếu cần hỗ trợ.`
+              );
+            } else {
+              await sendTelegramMessage(msg.chat.id, `Không tìm thấy user pending ${targetId}`);
+            }
+            continue;
+          }
+
+          if (msg.text.trim() === "/pending") {
+            const pending = getPendingUsers(tenantId);
+            if (pending.length === 0) {
+              await sendTelegramMessage(msg.chat.id, "📋 Không có yêu cầu đăng ký nào đang chờ duyệt.");
+            } else {
+              const list = pending.map((u: any) => {
+                const meta = typeof u.metadata === "string" ? JSON.parse(u.metadata) : (u.metadata ?? {});
+                return `• <b>${u.displayName}</b> — ${meta.position ?? "N/A"} — ${meta.phone ?? "N/A"}\n  /approve ${u.channelUserId}  |  /reject ${u.channelUserId}`;
+              }).join("\n\n");
+              await sendTelegramMessage(msg.chat.id, `📋 <b>Đang chờ duyệt (${pending.length}):</b>\n\n${list}`);
+            }
+            continue;
+          }
         }
 
         // ── Handle file uploads ──
