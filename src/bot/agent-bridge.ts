@@ -15,20 +15,22 @@
 import { getConfig } from "../config.js";
 import { getDb } from "../db/connection.js";
 import { agents } from "../db/schema.js";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, and } from "drizzle-orm";
 import { createTask, completeTask, getTask } from "../modules/tasks/task.service.js";
 import { writeLog } from "../modules/logs/log.service.js";
 import { listAgents } from "../modules/agents/agent.service.js";
 import { notebookWrite, notebookRead, notebookList } from "../modules/notebooks/notebook.service.js";
 import { storeKnowledge, retrieveKnowledge } from "../modules/knowledge/knowledge.service.js";
 import { getDashboard } from "../modules/monitoring/monitor.service.js";
+import { startWorkflow } from "../modules/workflows/workflow-engine.service.js";
+import { getFile, listFiles } from "../modules/storage/s3.service.js";
+import { getQueueMetrics } from "./telegram.bot.js";
 import {
   workflowTemplates, formTemplates, businessRules,
   workflowInstances, tenants, tenantUsers,
 } from "../db/schema.js";
 import { newId } from "../utils/id.js";
 import { nowMs } from "../utils/clock.js";
-import { and } from "drizzle-orm";
 
 // ── OpenAI native function calling definitions ───────────────
 
@@ -183,7 +185,6 @@ function executeTool(tool: string, args: Record<string, unknown>, tenantId: stri
     }
 
     case "start_workflow_instance": {
-      const { startWorkflow } = require("../modules/workflows/workflow-engine.service.js");
       const instance = startWorkflow({
         templateId: args.template_id as string,
         tenantId,
@@ -194,7 +195,6 @@ function executeTool(tool: string, args: Record<string, unknown>, tenantId: stri
     }
 
     case "get_dashboard": {
-      const { getQueueMetrics } = require("./telegram.bot.js");
       const dash = getDashboard();
       const queueMetrics = getQueueMetrics?.() ?? null;
       return { ...dash, queue: queueMetrics };
@@ -250,19 +250,16 @@ function executeTool(tool: string, args: Record<string, unknown>, tenantId: stri
     }
 
     case "send_file": {
-      const { getFile: gf } = require("../modules/storage/s3.service.js");
-      const file = gf(args.file_id as string);
+      const file = getFile(args.file_id as string);
       if (!file) return { error: "File not found" };
       return { __send_file__: true, url: file.s3Url, fileName: file.fileName, mimeType: file.mimeType };
     }
 
     case "list_files": {
-      const { listFiles } = require("../modules/storage/s3.service.js");
       return listFiles(tenantId, (args.limit as number) ?? 20);
     }
 
     case "get_file": {
-      const { getFile } = require("../modules/storage/s3.service.js");
       return getFile(args.file_id as string);
     }
 
