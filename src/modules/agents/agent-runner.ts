@@ -14,7 +14,7 @@ import type { agents } from "../../db/schemas/agents.js";
 
 export type AgentRecord = InferSelectModel<typeof agents>;
 
-export type LLMEngine = "claude-sdk" | "fast-api";
+export type LLMEngine = "fast-api";
 
 export interface ToolDefinition {
   name: string;
@@ -131,77 +131,13 @@ export class AgentRunner {
   }
 
   /**
-   * Call the LLM based on engine type.
+   * Call the LLM — all agents use fast API.
    */
   private async callLLM(
     userMessage: string,
     history: { role: string; content: string }[],
   ): Promise<string> {
-    if (this.engine === "claude-sdk") {
-      return this.callClaudeSDK(userMessage, history);
-    } else {
-      return this.callFastAPI(userMessage, history);
-    }
-  }
-
-  /**
-   * Claude Max via Claude Code SDK — powerful reasoning.
-   */
-  private async callClaudeSDK(
-    userMessage: string,
-    history: { role: string; content: string }[],
-  ): Promise<string> {
-    const prompt = this.buildPromptWithHistory(userMessage, history);
-
-    try {
-      // Try SDK import (works when @anthropic-ai/claude-code is installed locally)
-      const { query } = await import("@anthropic-ai/claude-code");
-      let resultText = "";
-      for await (const msg of query({
-        prompt,
-        systemPrompt: this.systemPrompt,
-        options: { maxTurns: 1 },
-      })) {
-        if (msg.type === "text") {
-          resultText += msg.content;
-        }
-      }
-      return resultText || "Không có phản hồi.";
-    } catch {
-      // Fallback 1: claude CLI
-      try {
-        console.error(`[Agent:${this.agent.name}] SDK failed, trying CLI...`);
-        return await this.callClaudeCLI(prompt);
-      } catch {
-        // Fallback 2: fast API (always works)
-        console.error(`[Agent:${this.agent.name}] CLI failed, falling back to fast API`);
-        return this.callFastAPI(userMessage, history);
-      }
-    }
-  }
-
-  /**
-   * Fallback: call `claude` CLI as subprocess.
-   */
-  private async callClaudeCLI(prompt: string): Promise<string> {
-    const { execFile } = await import("child_process");
-    const { promisify } = await import("util");
-    const execFileAsync = promisify(execFile);
-
-    // Include system prompt in the prompt itself so CLI has full context
-    const fullPrompt = `${this.systemPrompt}\n\n---\n\nUser message: ${prompt}`;
-
-    try {
-      const { stdout } = await execFileAsync("claude", [
-        "--print",
-        "--output-format", "text",
-        "--max-turns", "1",
-        "-p", fullPrompt,
-      ], { timeout: 120_000, maxBuffer: 1024 * 1024, cwd: "/tmp", env: { ...process.env, HOME: process.env.HOME ?? "/root" } });
-      return stdout.trim() || "Không có phản hồi.";
-    } catch (e: any) {
-      throw new Error(`Claude CLI failed: ${e.message}`);
-    }
+    return this.callFastAPI(userMessage, history);
   }
 
   /**

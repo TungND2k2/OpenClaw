@@ -40,14 +40,28 @@ async function callTelegram(method: string, params: Record<string, unknown>): Pr
   return body.result;
 }
 
-async function sendTelegramMessage(chatId: string | number, text: string): Promise<void> {
+async function sendTelegramMessage(chatId: string | number, text: string): Promise<number | undefined> {
   const chunks = splitMessage(text, 4000);
+  let lastMsgId: number | undefined;
   for (const chunk of chunks) {
     try {
-      await callTelegram("sendMessage", { chat_id: chatId, text: chunk, parse_mode: "HTML" });
+      const result = await callTelegram("sendMessage", { chat_id: chatId, text: chunk, parse_mode: "HTML" });
+      lastMsgId = result?.message_id;
     } catch {
-      await callTelegram("sendMessage", { chat_id: chatId, text: chunk.replace(/<[^>]*>/g, "") });
+      const result = await callTelegram("sendMessage", { chat_id: chatId, text: chunk.replace(/<[^>]*>/g, "") });
+      lastMsgId = result?.message_id;
     }
+  }
+  return lastMsgId;
+}
+
+async function editTelegramMessage(chatId: string | number, messageId: number, text: string): Promise<void> {
+  try {
+    await callTelegram("editMessageText", { chat_id: chatId, message_id: messageId, text, parse_mode: "HTML" });
+  } catch {
+    try {
+      await callTelegram("editMessageText", { chat_id: chatId, message_id: messageId, text: text.replace(/<[^>]*>/g, "") });
+    } catch {}
   }
 }
 
@@ -157,21 +171,21 @@ async function handleJob(job: QueueJob): Promise<void> {
 
   appendMessage(session.id, { role: "user", content: job.text, at: Date.now() });
 
-  // Show "typing..." indicator — refresh every 4s while processing
-  let typingActive = true;
-  const typingLoop = async () => {
-    while (typingActive) {
-      await sendTyping(job.chatId);
-      await new Promise((r) => setTimeout(r, 4000));
-    }
-  };
-  typingLoop();
+  // ── Send progress message immediately ──
+  const progressMsgId = await sendTelegramMessage(job.chatId, "⏳ Đang xử lý...");
 
   const state = session.state ?? { messages: [] };
   const history = (state.messages ?? []).map((m: any) => ({
     role: m.role as string,
     content: m.content as string,
   }));
+
+  // Progress callback — edits the progress message as tools execute
+  const onProgress = async (stage: string) => {
+    if (progressMsgId) {
+      await editTelegramMessage(job.chatId, progressMsgId, stage);
+    }
+  };
 
   const response = await processWithCommander({
     userMessage: job.text,
@@ -182,12 +196,23 @@ async function handleJob(job: QueueJob): Promise<void> {
     tenantName: tenant?.name ?? "OpenClaw",
     conversationHistory: history.slice(-15),
     aiConfig: (tenant?.aiConfig ?? {}) as Record<string, unknown>,
+    onProgress,
   });
 
-  typingActive = false;
+  // ── Edit progress message → final response ──
   const formattedText = markdownToTelegramHtml(response.text);
   appendMessage(session.id, { role: "assistant", content: response.text, at: Date.now() });
-  await sendTelegramMessage(job.chatId, formattedText);
+
+  if (progressMsgId && formattedText.length <= 4000) {
+    // Edit the progress message with final result
+    await editTelegramMessage(job.chatId, progressMsgId, formattedText);
+  } else {
+    // Too long — delete progress, send new
+    if (progressMsgId) {
+      try { await callTelegram("deleteMessage", { chat_id: job.chatId, message_id: progressMsgId }); } catch {}
+    }
+    await sendTelegramMessage(job.chatId, formattedText);
+  }
 
   // Send files if any
   for (const file of response.files) {

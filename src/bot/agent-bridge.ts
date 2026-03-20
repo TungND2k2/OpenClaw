@@ -190,6 +190,7 @@ export async function processWithCommander(input: {
   tenantName: string;
   conversationHistory: { role: string; content: string }[];
   aiConfig: Record<string, unknown>;
+  onProgress?: (stage: string) => Promise<void>;
 }): Promise<CommanderResponse> {
   const _files: CommanderResponse["files"] = [];
   const startTime = Date.now();
@@ -225,6 +226,7 @@ export async function processWithCommander(input: {
   }
 
   // ── Step 2: Query Knowledge Base ─────────────────────────
+  await input.onProgress?.("🔍 Đang tìm kiếm kiến thức...");
   const keywords = input.userMessage.toLowerCase().split(/\s+/).filter(w => w.length > 2);
   const knowledge = retrieveKnowledge({
     tags: keywords,
@@ -251,6 +253,22 @@ export async function processWithCommander(input: {
   const systemPrompt = buildCommanderPrompt(input.tenantName, input.userName, input.userRole, input.aiConfig) + knowledgeContext + fileContext;
 
   // ── Step 4: Commander THINKS ─────────────────────────────
+  await input.onProgress?.("🤖 Commander đang suy nghĩ...");
+
+  // Tool name → friendly label map
+  const toolLabels: Record<string, string> = {
+    list_files: "📂 Đang xem danh sách file...",
+    read_file_content: "📖 Đang đọc nội dung file...",
+    list_workflows: "⚙️ Đang xem quy trình...",
+    create_workflow: "🔧 Đang tạo quy trình...",
+    create_form: "📋 Đang tạo form...",
+    search_knowledge: "🔍 Đang tìm kiến thức...",
+    save_knowledge: "💾 Đang lưu kiến thức...",
+    save_tutorial: "📝 Đang lưu tutorial...",
+    get_dashboard: "📊 Đang lấy dashboard...",
+    send_file: "📤 Đang gửi file...",
+  };
+
   // Create a per-request runner with the right context + tool executor
   const runner = new AgentRunner({
     agent: commander.agent,
@@ -258,6 +276,7 @@ export async function processWithCommander(input: {
     tools: [],
     systemPrompt,
     executeTool: async (tool, args) => {
+      await input.onProgress?.(toolLabels[tool] ?? `🔄 Đang thực thi ${tool}...`);
       const toolResult = await executeTool(tool, args, input.tenantId);
       if (toolResult && typeof toolResult === "object" && (toolResult as any).__send_file__) {
         _files.push({ url: (toolResult as any).url, fileName: (toolResult as any).fileName, mimeType: (toolResult as any).mimeType });
@@ -269,6 +288,8 @@ export async function processWithCommander(input: {
 
   try {
     const result = await runner.think(input.userMessage, input.conversationHistory);
+
+    await input.onProgress?.("✍️ Đang tổng hợp câu trả lời...");
 
     // ── Step 5: Complete task + update performance ──────────
     if (task) {

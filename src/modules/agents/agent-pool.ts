@@ -49,24 +49,13 @@ export interface PoolConfig {
   toolExecutor: (tool: string, args: Record<string, unknown>, tenantId: string) => Promise<unknown>;
 }
 
-async function detectBestEngine(): Promise<LLMEngine> {
-  try {
-    const { execFile } = await import("child_process");
-    const { promisify } = await import("util");
-    const exec = promisify(execFile);
-    await exec("claude", ["--version"], { timeout: 5000, cwd: "/tmp" });
-    console.error("[AgentPool] Claude CLI detected → Commander uses claude-sdk");
-    return "claude-sdk";
-  } catch {
-    console.error("[AgentPool] Claude CLI not available → Commander uses fast-api");
-    return "fast-api";
-  }
-}
+// All agents use fast-api (x-or.cloud) — reliable, fast, cheap
+// Claude SDK/CLI removed to avoid dependency issues
 
-export async function initAgentPool(config: PoolConfig): Promise<{
+export function initAgentPool(config: PoolConfig): {
   commander: AgentRunner;
   workers: AgentRunner[];
-}> {
+} {
   _toolExecutor = config.toolExecutor;
   const workerCount = config.workerCount ?? 3;
 
@@ -109,12 +98,10 @@ export async function initAgentPool(config: PoolConfig): Promise<{
 
   // ── 3. Create runners (agent + brain) ────────────────────
 
-  // Commander — uses claude-sdk if available, else fast-api
-  // Detect: if claude CLI exists on this machine, use SDK
-  const commanderEngine = await detectBestEngine();
+  // Commander uses fast-api (same as workers, reliable)
   commanderRunner = new AgentRunner({
     agent: commanderRecord as any,
-    engine: commanderEngine,
+    engine: "fast-api",
     tools: AGENT_TOOLS,
     systemPrompt: "", // Will be set per-request with context
     executeTool: async () => ({}), // Will be overridden per-request
