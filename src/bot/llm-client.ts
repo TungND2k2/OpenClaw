@@ -30,10 +30,18 @@ function getAnthropicClient(): Anthropic | null {
 
   if (!apiKey) return null;
 
+  // OAuth tokens (sk-ant-oat01-) use api.claude.ai, API keys use api.anthropic.com
+  const isOAuth = apiKey.startsWith("sk-ant-oat01-");
+  const baseURL = isOAuth
+    ? "https://api.claude.ai"
+    : (config.COMMANDER_API_BASE ?? "https://api.anthropic.com");
+
   _anthropic = new Anthropic({
     apiKey,
-    baseURL: config.COMMANDER_API_BASE ?? "https://api.anthropic.com",
+    baseURL,
   });
+
+  console.error(`[Claude] Client init: ${isOAuth ? "OAuth (claude.ai)" : "API key (anthropic.com)"}`);
   return _anthropic;
 }
 
