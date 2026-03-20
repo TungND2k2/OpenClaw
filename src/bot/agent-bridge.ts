@@ -30,7 +30,27 @@ import { newId } from "../utils/id.js";
 import { nowMs } from "../utils/clock.js";
 import { and } from "drizzle-orm";
 
-// ── Available tools the Commander can call ───────────────────
+// ── OpenAI native function calling definitions ───────────────
+
+const OPENAI_TOOLS = [
+  { type: "function", function: { name: "list_workflows", description: "List all workflow templates", parameters: { type: "object", properties: {}, required: [] } } },
+  { type: "function", function: { name: "create_workflow", description: "Create new workflow template", parameters: { type: "object", properties: { name: { type: "string" }, description: { type: "string" }, domain: { type: "string" }, stages: { type: "array", items: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, type: { type: "string", enum: ["form", "approval", "notification", "action"] }, next_stage_id: { type: "string" } } } } }, required: ["name", "stages"] } } },
+  { type: "function", function: { name: "create_form", description: "Create form template", parameters: { type: "object", properties: { name: { type: "string" }, fields: { type: "array", items: { type: "object" } } }, required: ["name", "fields"] } } },
+  { type: "function", function: { name: "create_rule", description: "Create business rule", parameters: { type: "object", properties: { name: { type: "string" }, domain: { type: "string" }, rule_type: { type: "string" }, conditions: { type: "object" }, actions: { type: "array", items: { type: "object" } } }, required: ["name", "rule_type", "conditions", "actions"] } } },
+  { type: "function", function: { name: "save_tutorial", description: "Save tutorial to knowledge base", parameters: { type: "object", properties: { title: { type: "string" }, content: { type: "string" }, target_role: { type: "string" }, domain: { type: "string" } }, required: ["title", "content"] } } },
+  { type: "function", function: { name: "save_knowledge", description: "Save knowledge entry", parameters: { type: "object", properties: { type: { type: "string" }, title: { type: "string" }, content: { type: "string" }, domain: { type: "string" }, tags: { type: "array", items: { type: "string" } } }, required: ["title", "content", "domain"] } } },
+  { type: "function", function: { name: "list_tutorials", description: "List saved tutorials", parameters: { type: "object", properties: { domain: { type: "string" } }, required: [] } } },
+  { type: "function", function: { name: "start_workflow_instance", description: "Start a workflow for user", parameters: { type: "object", properties: { template_id: { type: "string" }, initiated_by: { type: "string" } }, required: ["template_id"] } } },
+  { type: "function", function: { name: "get_dashboard", description: "Get system dashboard stats", parameters: { type: "object", properties: {}, required: [] } } },
+  { type: "function", function: { name: "search_knowledge", description: "Search knowledge base", parameters: { type: "object", properties: { domain: { type: "string" }, tags: { type: "array", items: { type: "string" } } }, required: [] } } },
+  { type: "function", function: { name: "set_user_role", description: "Set user role (admin only)", parameters: { type: "object", properties: { channel: { type: "string" }, channel_user_id: { type: "string" }, role: { type: "string", enum: ["admin", "manager", "staff", "user"] }, display_name: { type: "string" } }, required: ["channel", "channel_user_id", "role"] } } },
+  { type: "function", function: { name: "list_users", description: "List all tenant users with roles", parameters: { type: "object", properties: {}, required: [] } } },
+  { type: "function", function: { name: "list_files", description: "List uploaded files", parameters: { type: "object", properties: { limit: { type: "number" } }, required: [] } } },
+  { type: "function", function: { name: "get_file", description: "Get file details + S3 URL", parameters: { type: "object", properties: { file_id: { type: "string" } }, required: ["file_id"] } } },
+  { type: "function", function: { name: "send_file", description: "Send a file back to user", parameters: { type: "object", properties: { file_id: { type: "string" } }, required: ["file_id"] } } },
+];
+
+// ── Tool descriptions for system prompt (fallback) ───────────
 
 const TOOL_DEFINITIONS = `
 Available tools you can call (respond with tool_calls JSON):
@@ -307,7 +327,11 @@ export async function processWithCommander(input: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({ model, messages, max_tokens: 2048, temperature: 0.7 }),
+      body: JSON.stringify({
+        model, messages, max_tokens: 2048, temperature: 0.7,
+        tools: OPENAI_TOOLS,
+        tool_choice: "auto",
+      }),
       signal: AbortSignal.timeout(60000),
     });
 
@@ -320,14 +344,30 @@ export async function processWithCommander(input: {
     }
 
     const data = await response.json() as any;
-    const content = data.choices?.[0]?.message?.content ?? "";
+    const choice = data.choices?.[0];
+    const content = choice?.message?.content ?? "";
+    const nativeToolCalls = choice?.message?.tool_calls;
     const usage = data.usage;
 
     console.error(`[Pipeline] ✓ LLM responded (${llmMs}ms)${usage ? ` [tokens: ${usage.prompt_tokens}→${usage.completion_tokens}]` : ""}`);
-    console.error(`[Pipeline] Raw response: ${content.substring(0, 150)}${content.length > 150 ? "..." : ""}`);
+    if (content) console.error(`[Pipeline] Content: ${content.substring(0, 150)}${content.length > 150 ? "..." : ""}`);
 
-    // Parse tool calls from response
-    const toolCalls = parseToolCalls(content);
+    // Parse tool calls — native OpenAI format first, fallback to text parsing
+    let toolCalls: ToolCall[] = [];
+
+    if (nativeToolCalls && Array.isArray(nativeToolCalls) && nativeToolCalls.length > 0) {
+      // Native OpenAI function calling
+      toolCalls = nativeToolCalls.map((tc: any) => ({
+        tool: tc.function.name,
+        args: typeof tc.function.arguments === "string"
+          ? JSON.parse(tc.function.arguments)
+          : tc.function.arguments,
+      }));
+      console.error(`[Pipeline] Native tool calls: ${toolCalls.map(t => t.tool).join(", ")}`);
+    } else {
+      // Fallback: parse from content text
+      toolCalls = parseToolCalls(content);
+    }
 
     if (toolCalls.length === 0) {
       console.error(`[Pipeline] No tool calls — text response only`);
