@@ -67,6 +67,45 @@ async function sendTelegramFile(chatId: string | number, fileUrl: string, fileNa
   }
 }
 
+/**
+ * Send "typing..." indicator to Telegram chat.
+ */
+async function sendTyping(chatId: string | number): Promise<void> {
+  try {
+    await callTelegram("sendChatAction", { chat_id: chatId, action: "typing" });
+  } catch {}
+}
+
+/**
+ * Convert markdown to Telegram HTML.
+ */
+function markdownToTelegramHtml(text: string): string {
+  let r = text;
+  // Tables → plain text (Telegram doesn't support tables)
+  r = r.replace(/\|[^\n]+\|/g, (line) => {
+    return line.replace(/\|/g, " ").replace(/[-:]+/g, "").trim();
+  });
+  // Code blocks
+  r = r.replace(/```[\w]*\n?([\s\S]*?)```/g, "<pre>$1</pre>");
+  // Inline code
+  r = r.replace(/`([^`]+)`/g, "<code>$1</code>");
+  // Bold **text**
+  r = r.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
+  // Italic *text* (not inside bold)
+  r = r.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<i>$1</i>");
+  // Headers ## → bold
+  r = r.replace(/^#{1,3}\s+(.+)$/gm, "<b>$1</b>");
+  // Blockquotes > text
+  r = r.replace(/^>\s*(.+)$/gm, "│ <i>$1</i>");
+  // Horizontal rules ---
+  r = r.replace(/^-{3,}$/gm, "───────────");
+  // List items - → •
+  r = r.replace(/^-\s+/gm, "• ");
+  // Clean excessive newlines
+  r = r.replace(/\n{3,}/g, "\n\n").trim();
+  return r;
+}
+
 function splitMessage(text: string, maxLen: number): string[] {
   if (text.length <= maxLen) return [text];
   const parts: string[] = [];
@@ -111,6 +150,16 @@ async function handleJob(job: QueueJob): Promise<void> {
 
   appendMessage(session.id, { role: "user", content: job.text, at: Date.now() });
 
+  // Show "typing..." indicator — refresh every 4s while processing
+  let typingActive = true;
+  const typingLoop = async () => {
+    while (typingActive) {
+      await sendTyping(job.chatId);
+      await new Promise((r) => setTimeout(r, 4000));
+    }
+  };
+  typingLoop();
+
   const state = session.state ?? { messages: [] };
   const history = (state.messages ?? []).map((m: any) => ({
     role: m.role as string,
@@ -128,8 +177,10 @@ async function handleJob(job: QueueJob): Promise<void> {
     aiConfig: (tenant?.aiConfig ?? {}) as Record<string, unknown>,
   });
 
+  typingActive = false;
+  const formattedText = markdownToTelegramHtml(response.text);
   appendMessage(session.id, { role: "assistant", content: response.text, at: Date.now() });
-  await sendTelegramMessage(job.chatId, response.text);
+  await sendTelegramMessage(job.chatId, formattedText);
 
   // Send files if any
   for (const file of response.files) {
