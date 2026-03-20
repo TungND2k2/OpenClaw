@@ -168,9 +168,15 @@ export class AgentRunner {
       }
       return resultText || "Không có phản hồi.";
     } catch {
-      // Fallback: call claude CLI directly (global install)
-      console.error(`[Agent:${this.agent.name}] SDK import failed, using CLI fallback`);
-      return this.callClaudeCLI(prompt);
+      // Fallback 1: claude CLI
+      try {
+        console.error(`[Agent:${this.agent.name}] SDK failed, trying CLI...`);
+        return await this.callClaudeCLI(prompt);
+      } catch {
+        // Fallback 2: fast API (always works)
+        console.error(`[Agent:${this.agent.name}] CLI failed, falling back to fast API`);
+        return this.callFastAPI(userMessage, history);
+      }
     }
   }
 
