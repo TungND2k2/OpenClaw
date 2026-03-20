@@ -188,7 +188,7 @@ export class AgentRunner {
         "--output-format", "text",
         "--max-turns", "1",
         "-p", prompt,
-      ], { timeout: 120_000, maxBuffer: 1024 * 1024 });
+      ], { timeout: 120_000, maxBuffer: 1024 * 1024, cwd: "/tmp", env: { ...process.env, HOME: process.env.HOME ?? "/root" } });
       return stdout.trim() || "Không có phản hồi.";
     } catch (e: any) {
       throw new Error(`Claude CLI failed: ${e.message}`);
