@@ -13,17 +13,82 @@ import { getDb } from "../src/db/connection.js";
 import { workflowTemplates, formTemplates, businessRules, tenantUsers } from "../src/db/schema.js";
 import { newId } from "../src/utils/id.js";
 import { nowMs } from "../src/utils/clock.js";
-import { registerAgent, heartbeat } from "../src/modules/agents/agent.service.js";
+// agents created by agent-pool on startup
 import { closeDb } from "../src/db/connection.js";
 
 const now = nowMs();
 const db = getDb();
 
-// 1. Create tenant
+// 1. Create tenant with AI config (prompt, tools, rules — all in DB, not hardcoded)
 const tenant = createTenant({
   name: "Demo Corp",
   config: { currency: "VND", timezone: "Asia/Ho_Chi_Minh" },
-  aiConfig: { language: "vi", tone: "professional" },
+  aiConfig: {
+    language: "vi",
+    tone: "professional",
+    bot_name: "Milo",
+    bot_intro: "trợ lý AI",
+
+    // System prompt template — {{variables}} sẽ được thay runtime
+    prompt_template: `Bạn là {{bot_name}} — {{bot_intro}} của {{tenant_name}}. Luôn xưng "{{bot_name}}" khi giao tiếp.
+
+USER: {{user_name}} | ROLE: {{user_role}}
+QUYỀN: {{user_permissions}}
+
+{{tool_instructions}}
+
+QUY TẮC:
+{{rules}}
+
+{{custom_instructions}}`,
+
+    // Quy tắc mặc định — admin sửa qua chat
+    rules: [
+      "Khi có KNOWLEDGE BASE → ƯU TIÊN dùng, trả lời nhanh",
+      "Khi user nhắc đến file/cẩm nang/tài liệu → TỰ ĐỘNG gọi list_files → read_file_content → trả lời. KHÔNG hỏi lại user ID hay tên file",
+      "Khi list FILES ĐÃ UPLOAD có sẵn → dùng file_id từ đó, KHÔNG cần gọi list_files",
+      "KHÔNG tự bịa nội dung — phải dựa trên dữ liệu thật (knowledge/file/DB)",
+      "Ngắn gọn, thực tế, đúng trọng tâm câu hỏi",
+      "Gọi tool NGAY khi có đủ thông tin, không hỏi lại user",
+    ],
+
+    // Tool definitions — admin thêm/sửa/xoá qua chat
+    tools: {
+      business: [
+        { name: "list_workflows", desc: "Xem danh sách quy trình" },
+        { name: "create_workflow", desc: "Tạo quy trình", args: "name, description, domain, stages[{id,name,type}]" },
+        { name: "create_form", desc: "Tạo form", args: "name, fields[{id,label,type,required}]" },
+        { name: "create_rule", desc: "Tạo business rule", args: "name, domain, rule_type, conditions, actions" },
+        { name: "save_tutorial", desc: "Lưu tutorial", args: "title, content, target_role, domain" },
+        { name: "save_knowledge", desc: "Lưu knowledge", args: "type, title, content, domain, tags[]" },
+        { name: "list_files", desc: "Xem file đã upload", args: "limit?" },
+        { name: "read_file_content", desc: "Đọc nội dung file (DOCX/TXT/CSV)", args: "file_id" },
+        { name: "get_file", desc: "Xem metadata file", args: "file_id" },
+        { name: "send_file", desc: "Gửi file cho user", args: "file_id" },
+        { name: "list_users", desc: "Xem users" },
+        { name: "set_user_role", desc: "Đổi role", args: "channel, channel_user_id, role" },
+        { name: "get_dashboard", desc: "Dashboard hệ thống" },
+        { name: "search_knowledge", desc: "Tìm knowledge đã học", args: "domain?, tags?" },
+      ],
+      agent_management: [
+        { name: "create_agent_template", desc: "Tạo template agent mới", args: "name, role, system_prompt, capabilities[], tools[], engine?" },
+        { name: "list_agent_templates", desc: "Xem templates", args: "role?, status?" },
+        { name: "spawn_agent", desc: "Tạo agent từ template", args: "template_id?, template_name?, count?" },
+        { name: "kill_agent", desc: "Tắt agent", args: "agent_id" },
+        { name: "list_agents", desc: "Xem agents đang chạy", args: "role?, status?" },
+      ],
+    },
+
+    // Permission labels per role
+    role_permissions: {
+      admin: "ADMIN — tạo/sửa quy trình, tutorial, rules, quản lý user, quản lý agents",
+      manager: "MANAGER — tạo/sửa quy trình, tutorial, quản lý staff",
+      staff: "STAFF — sử dụng quy trình, hỏi đáp",
+      user: "USER — sử dụng quy trình có sẵn, hỏi đáp",
+    },
+
+    custom_instructions: "",
+  },
 });
 console.log(`✅ Tenant: ${tenant.id} (${tenant.name})`);
 

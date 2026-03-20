@@ -170,6 +170,40 @@ export async function executeTool(tool: string, args: Record<string, unknown>, t
         .from(tenantUsers).where(eq(tenantUsers.tenantId, tenantId)).all();
     }
 
+    // ── AI Config Tools (admin edits bot behavior via chat) ──
+
+    case "update_ai_config": {
+      const { tenants } = await import("../db/schema.js");
+      const tenant = db.select().from(tenants).where(eq(tenants.id, tenantId)).get();
+      if (!tenant) return { error: "Tenant not found" };
+      const current = (tenant.aiConfig ?? {}) as Record<string, unknown>;
+
+      // Merge updates into current config
+      const updates = args as Record<string, unknown>;
+      for (const [key, value] of Object.entries(updates)) {
+        if (key === "rules" && Array.isArray(value)) {
+          // Append rules instead of replace
+          const existing = (current.rules as string[]) ?? [];
+          current.rules = [...existing, ...value];
+        } else if (key === "remove_rule" && typeof value === "number") {
+          const existing = (current.rules as string[]) ?? [];
+          existing.splice(value, 1);
+          current.rules = existing;
+        } else {
+          current[key] = value;
+        }
+      }
+
+      db.update(tenants).set({ aiConfig: current, updatedAt: nowMs() }).where(eq(tenants.id, tenantId)).run();
+      return { success: true, updated_keys: Object.keys(updates), config: current };
+    }
+
+    case "get_ai_config": {
+      const { tenants: t } = await import("../db/schema.js");
+      const tn = db.select().from(t).where(eq(t.id, tenantId)).get();
+      return tn?.aiConfig ?? {};
+    }
+
     // ── Agent Management Tools ───────────────────────────────
 
     case "create_agent_template": {
@@ -406,53 +440,61 @@ export async function processWithCommander(input: {
   }
 }
 
-// ── System Prompt ────────────────────────────────────────────
+// ── System Prompt (from DB, not hardcoded) ───────────────────
 
 function buildCommanderPrompt(
   tenantName: string, userName: string, userRole: string,
   aiConfig: Record<string, unknown>
 ): string {
-  const customInstructions = (aiConfig.system_prompt as string) ?? "";
+  const cfg = aiConfig as any;
+  const botName = cfg.bot_name ?? "Milo";
+  const botIntro = cfg.bot_intro ?? "trợ lý AI";
+  const rolePerms = cfg.role_permissions ?? {};
+  const userPermissions = rolePerms[userRole] ?? `${userRole.toUpperCase()}`;
+  const rules = (cfg.rules as string[]) ?? [];
+  const customInstructions = (cfg.custom_instructions as string) ?? "";
 
-  return `Bạn là Milo — trợ lý AI của ${tenantName}. Luôn xưng "Milo" khi giao tiếp.
+  // Build tool instructions from DB config
+  const tools = cfg.tools ?? {};
+  let toolInstructions = "Bạn có tools sau. Khi cần, output JSON block ```tool_calls để gọi:\n";
 
-USER: ${userName} | ROLE: ${userRole} | QUYỀN: ${userRole === "admin" || userRole === "manager" ? "ADMIN — tạo/sửa quy trình, tutorial, rules, quản lý user, quản lý agents" : "USER — sử dụng quy trình có sẵn, hỏi đáp"}
+  let idx = 1;
+  for (const [category, toolList] of Object.entries(tools)) {
+    const label = category === "business" ? "Business" : category === "agent_management" ? "Agent Management (ADMIN only)" : category;
+    toolInstructions += `\nTools — ${label}:\n`;
+    for (const t of toolList as any[]) {
+      toolInstructions += `${idx}. ${t.name}(${t.args ?? ""}) — ${t.desc}\n`;
+      idx++;
+    }
+  }
 
-Bạn có tools sau. Khi cần, output JSON block \`\`\`tool_calls để gọi:
+  toolInstructions += `\nCách gọi tool:\n\`\`\`tool_calls\n[{"tool":"tên_tool","args":{"key":"value"}}]\n\`\`\``;
 
-Tools — Business:
-1. list_workflows() — Xem danh sách quy trình
-2. create_workflow(name, description, domain, stages[{id,name,type}]) — Tạo quy trình
-3. create_form(name, fields[{id,label,type,required}]) — Tạo form
-4. create_rule(name, domain, rule_type, conditions, actions) — Tạo business rule
-5. save_tutorial(title, content, target_role, domain) — Lưu tutorial
-6. save_knowledge(type, title, content, domain, tags[]) — Lưu knowledge
-7. list_files(limit?) — Xem file đã upload
-8. read_file_content(file_id) — Đọc nội dung file (DOCX/TXT/CSV) — DÙNG KHI USER HỎI VỀ NỘI DUNG FILE
-9. get_file(file_id) — Xem metadata file
-10. send_file(file_id) — Gửi file cho user
-11. list_users() — Xem users
-12. set_user_role(channel, channel_user_id, role) — Đổi role
-13. get_dashboard() — Dashboard hệ thống
-14. search_knowledge(domain?, tags?) — Tìm knowledge đã học
+  // Build rules
+  const rulesText = rules.map((r: string) => `• ${r}`).join("\n");
 
-Tools — Agent Management (ADMIN only):
-15. create_agent_template(name, role, system_prompt, capabilities[], tools[], engine?) — Tạo template agent mới
-16. list_agent_templates(role?, status?) — Xem templates
-17. spawn_agent(template_id?, template_name?, count?) — Tạo agent từ template
-18. kill_agent(agent_id) — Tắt agent
-19. list_agents(role?, status?) — Xem agents đang chạy
+  // Use template from DB, or fallback
+  const template = (cfg.prompt_template as string) ?? `Bạn là {{bot_name}} — {{bot_intro}} của {{tenant_name}}.
 
-Cách gọi tool:
-\`\`\`tool_calls
-[{"tool":"read_file_content","args":{"file_id":"..."}}]
-\`\`\`
+USER: {{user_name}} | ROLE: {{user_role}}
+QUYỀN: {{user_permissions}}
 
-QUY TẮC QUAN TRỌNG:
-• Khi có KNOWLEDGE BASE bên dưới → ƯU TIÊN dùng, trả lời nhanh
-• Khi user hỏi về file/cẩm nang/tài liệu → gọi read_file_content, trả lời từ NỘI DUNG THỰC TẾ
-• KHÔNG tự bịa nội dung — phải dựa trên dữ liệu thật (knowledge/file/DB)
-• Ngắn gọn, thực tế, đúng trọng tâm câu hỏi
+{{tool_instructions}}
 
-${customInstructions}`.trim();
+QUY TẮC:
+{{rules}}
+
+{{custom_instructions}}`;
+
+  return template
+    .replace(/\{\{bot_name\}\}/g, botName)
+    .replace(/\{\{bot_intro\}\}/g, botIntro)
+    .replace(/\{\{tenant_name\}\}/g, tenantName)
+    .replace(/\{\{user_name\}\}/g, userName)
+    .replace(/\{\{user_role\}\}/g, userRole)
+    .replace(/\{\{user_permissions\}\}/g, userPermissions)
+    .replace(/\{\{tool_instructions\}\}/g, toolInstructions)
+    .replace(/\{\{rules\}\}/g, rulesText)
+    .replace(/\{\{custom_instructions\}\}/g, customInstructions)
+    .trim();
 }
