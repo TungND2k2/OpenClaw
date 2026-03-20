@@ -196,7 +196,16 @@ async function executeTool(tool: string, args: Record<string, unknown>, tenantId
     }
 
     case "read_file_content": {
-      const result = await readFileContent(args.file_id as string);
+      let fileId = args.file_id as string;
+      // If passed a filename instead of ID, try to find the file
+      if (fileId && !fileId.startsWith("01")) {
+        const allFiles = listFiles(tenantId, 50);
+        const match = allFiles.find((f: any) =>
+          f.fileName.toLowerCase().includes(fileId.toLowerCase())
+        );
+        if (match) fileId = match.id;
+      }
+      const result = await readFileContent(fileId);
       if (!result) return { error: "File not found or cannot read" };
       return { fileName: result.fileName, mimeType: result.mimeType, content: result.content, truncated: result.truncated };
     }
@@ -226,7 +235,7 @@ async function executeTool(tool: string, args: Record<string, unknown>, tenantId
 
 // ── Commander LLM call (Claude Code SDK) ─────────────────────
 
-import { processWithClaudeCLI } from "./llm-client.js";
+import { processMessage } from "./llm-client.js";
 
 export interface CommanderResponse {
   text: string;
@@ -254,7 +263,7 @@ export async function processWithCommander(input: {
   const systemPrompt = buildCommanderPrompt(input.tenantName, input.userName, input.userRole, input.aiConfig);
 
   try {
-    const result = await processWithClaudeCLI({
+    const result = await processMessage({
       userMessage: input.userMessage,
       systemPrompt,
       conversationHistory: input.conversationHistory,

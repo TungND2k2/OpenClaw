@@ -72,7 +72,14 @@ async function sendTelegramFile(chatId: string | number, fileUrl: string, fileNa
  */
 async function sendTyping(chatId: string | number): Promise<void> {
   try {
-    await callTelegram("sendChatAction", { chat_id: chatId, action: "typing" });
+    const token = getConfig().TELEGRAM_BOT_TOKEN;
+    if (!token) return;
+    await fetch(`${TELEGRAM_API}${token}/sendChatAction`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, action: "typing" }),
+      signal: AbortSignal.timeout(5000),
+    });
   } catch {}
 }
 
