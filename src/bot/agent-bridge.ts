@@ -172,7 +172,10 @@ function executeTool(tool: string, args: Record<string, unknown>, tenantId: stri
     }
 
     case "get_dashboard": {
-      return getDashboard();
+      const { getQueueMetrics } = require("./telegram.bot.js");
+      const dash = getDashboard();
+      const queueMetrics = getQueueMetrics?.() ?? null;
+      return { ...dash, queue: queueMetrics };
     }
 
     case "search_knowledge": {
