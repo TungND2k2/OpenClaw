@@ -262,7 +262,17 @@ export async function processWithCommander(input: {
     { role: "user", content: input.userMessage },
   ];
 
+  const startTime = Date.now();
+  console.error(`[Pipeline] ─── START ───────────────────────────`);
+  console.error(`[Pipeline] User: ${input.userName} (${input.userRole})`);
+  console.error(`[Pipeline] Message: "${input.userMessage}"`);
+  console.error(`[Pipeline] Model: ${model} via ${apiBase}`);
+  console.error(`[Pipeline] History: ${input.conversationHistory.length} messages`);
+
   try {
+    console.error(`[Pipeline] → Calling LLM...`);
+    const llmStart = Date.now();
+
     const response = await fetch(`${apiBase}/chat/completions`, {
       method: "POST",
       headers: {
@@ -273,22 +283,31 @@ export async function processWithCommander(input: {
       signal: AbortSignal.timeout(60000),
     });
 
+    const llmMs = Date.now() - llmStart;
+
     if (!response.ok) {
       const err = await response.text();
-      console.error(`[Commander] API ${response.status}: ${err}`);
+      console.error(`[Pipeline] ✗ LLM error ${response.status} (${llmMs}ms): ${err.substring(0, 200)}`);
       return `⚠️ AI tạm thời không khả dụng (${response.status})`;
     }
 
     const data = await response.json() as any;
     const content = data.choices?.[0]?.message?.content ?? "";
+    const usage = data.usage;
+
+    console.error(`[Pipeline] ✓ LLM responded (${llmMs}ms)${usage ? ` [tokens: ${usage.prompt_tokens}→${usage.completion_tokens}]` : ""}`);
+    console.error(`[Pipeline] Raw response: ${content.substring(0, 150)}${content.length > 150 ? "..." : ""}`);
 
     // Parse tool calls from response
     const toolCalls = parseToolCalls(content);
 
     if (toolCalls.length === 0) {
-      // No tool calls — just a text response
+      console.error(`[Pipeline] No tool calls — text response only`);
+      console.error(`[Pipeline] ─── END (${Date.now() - startTime}ms) ────────────`);
       return markdownToHtml(content);
     }
+
+    console.error(`[Pipeline] Tool calls: ${toolCalls.map(t => t.tool).join(", ")}`);
 
     // Execute tool calls
     let responseMessage = "";
@@ -297,21 +316,30 @@ export async function processWithCommander(input: {
     for (const tc of toolCalls) {
       if (tc.tool === "respond") {
         responseMessage = tc.args.message as string;
+        console.error(`[Pipeline] → respond(): "${(responseMessage).substring(0, 80)}..."`);
       } else {
-        console.error(`[Commander] Calling tool: ${tc.tool}(${JSON.stringify(tc.args).substring(0, 100)})`);
+        const toolStart = Date.now();
+        console.error(`[Pipeline] → ${tc.tool}(${JSON.stringify(tc.args).substring(0, 120)})`);
         const result = executeTool(tc.tool, tc.args, input.tenantId);
-        toolResults.push(`${tc.tool}: ${JSON.stringify(result)}`);
+        const toolMs = Date.now() - toolStart;
+        const resultStr = JSON.stringify(result);
+        toolResults.push(`${tc.tool}: ${resultStr}`);
+        console.error(`[Pipeline]   ✓ ${tc.tool} (${toolMs}ms): ${resultStr.substring(0, 120)}`);
       }
     }
 
-    // If we got tool results but no respond() call, do a follow-up to generate user message
+    // If we got tool results but no respond() call, do a follow-up
     if (!responseMessage && toolResults.length > 0) {
+      console.error(`[Pipeline] → Follow-up LLM call to generate user message...`);
+      const fuStart = Date.now();
       responseMessage = await followUp(apiBase, apiKey, model, systemPrompt, messages, toolResults);
+      console.error(`[Pipeline]   ✓ Follow-up (${Date.now() - fuStart}ms)`);
     }
 
+    console.error(`[Pipeline] ─── END (${Date.now() - startTime}ms) ────────────`);
     return markdownToHtml(responseMessage || content);
   } catch (e: any) {
-    console.error("[Commander] Error:", e.message);
+    console.error(`[Pipeline] ✗ Error (${Date.now() - startTime}ms): ${e.message}`);
     return `⚠️ Lỗi: ${e.message}`;
   }
 }
