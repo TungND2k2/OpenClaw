@@ -152,7 +152,12 @@ export class AgentRunner {
   ): Promise<string> {
     const { execSync } = await import("child_process");
     const prompt = this.buildPromptWithHistory(userMessage, history);
-    const fullPrompt = `${this.systemPrompt}\n\n---\n\n${prompt}`;
+    const toolReminder = `\n\nQUAN TRỌNG: Khi cần thao tác dữ liệu (tạo, xem, sửa, xoá), BẮT BUỘC output JSON block tool_calls. Ví dụ:
+\`\`\`tool_calls
+[{"tool":"list_rows","args":{"collection":"đơn tìm vải"}}]
+\`\`\`
+KHÔNG ĐƯỢC tự bịa data. PHẢI gọi tool trước.`;
+    const fullPrompt = `${this.systemPrompt}${toolReminder}\n\n---\n\n${prompt}`;
 
     try {
       const result = execSync(
