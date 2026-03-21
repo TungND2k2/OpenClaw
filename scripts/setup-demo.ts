@@ -69,6 +69,12 @@ QUY TẮC:
         { name: "set_user_role", desc: "Đổi role", args: "channel, channel_user_id, role" },
         { name: "get_dashboard", desc: "Dashboard hệ thống" },
         { name: "search_knowledge", desc: "Tìm knowledge đã học", args: "domain?, tags?" },
+        { name: "create_collection", desc: "Tạo bảng dữ liệu mới (ví dụ: đơn hàng, khách hàng)", args: "name, description?, fields[{name,type,required?}]" },
+        { name: "list_collections", desc: "Xem danh sách bảng dữ liệu" },
+        { name: "add_row", desc: "Thêm dòng vào bảng (LƯU DATA THẬT VÀO DB)", args: "collection (tên bảng), data{key:value}" },
+        { name: "list_rows", desc: "Xem dữ liệu trong bảng", args: "collection (tên bảng), limit?" },
+        { name: "update_row", desc: "Cập nhật dòng", args: "row_id, data{key:value}" },
+        { name: "delete_row", desc: "Xoá dòng", args: "row_id" },
       ],
       agent_management: [
         { name: "create_agent_template", desc: "Tạo template agent mới", args: "name, role, system_prompt, capabilities[], tools[], engine?" },

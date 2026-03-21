@@ -7,3 +7,4 @@ export * from "./schemas/knowledge.js";
 export * from "./schemas/tenants.js";
 export * from "./schemas/workflows.js";
 export * from "./schemas/storage.js";
+export * from "./schemas/collections.js";

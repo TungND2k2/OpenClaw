@@ -27,6 +27,7 @@ import {
   workflowTemplates, formTemplates, businessRules,
   tenantUsers,
 } from "../db/schema.js";
+import { createCollection, listCollections, findCollection, insertRow, listRows, updateRow, deleteRow } from "../modules/collections/collection.service.js";
 import { newId } from "../utils/id.js";
 import { nowMs } from "../utils/clock.js";
 
@@ -254,6 +255,56 @@ export async function executeTool(tool: string, args: Record<string, unknown>, t
         .map(a => ({ id: a.id, name: a.name, role: a.role, status: a.status, templateId: a.templateId, performance: a.performanceScore, tasksCompleted: a.tasksCompleted }));
     }
 
+    // ── Dynamic Collections (admin-defined tables) ─────────
+
+    case "create_collection": {
+      return await createCollection({
+        tenantId,
+        name: args.name as string,
+        description: (args.description as string) ?? undefined,
+        fields: (args.fields as any[]) ?? [],
+        createdBy: (args.created_by as string) ?? undefined,
+      });
+    }
+
+    case "list_collections": {
+      return await listCollections(tenantId);
+    }
+
+    case "add_row": {
+      // Find collection by name or ID
+      let collectionId = args.collection_id as string;
+      if (!collectionId || !collectionId.startsWith("01")) {
+        const col = await findCollection(tenantId, (args.collection as string) ?? (args.collection_id as string) ?? "");
+        if (!col) return { error: `Collection "${args.collection ?? args.collection_id}" không tồn tại` };
+        collectionId = col.id;
+      }
+      return await insertRow({
+        collectionId,
+        data: (args.data as Record<string, unknown>) ?? {},
+        createdBy: (args.created_by as string) ?? undefined,
+      });
+    }
+
+    case "list_rows": {
+      let collectionId = args.collection_id as string;
+      if (!collectionId || !collectionId.startsWith("01")) {
+        const col = await findCollection(tenantId, (args.collection as string) ?? (args.collection_id as string) ?? "");
+        if (!col) return { error: `Collection "${args.collection ?? args.collection_id}" không tồn tại` };
+        collectionId = col.id;
+      }
+      return await listRows(collectionId, (args.limit as number) ?? 50);
+    }
+
+    case "update_row": {
+      return await updateRow(args.row_id as string, (args.data as Record<string, unknown>) ?? {});
+    }
+
+    case "delete_row": {
+      const deleted = await deleteRow(args.row_id as string);
+      return { deleted, row_id: args.row_id };
+    }
+
     default: return { error: `Unknown tool: ${tool}` };
   }
 }
@@ -453,7 +504,8 @@ function buildCommanderPrompt(
   const defaultRules = [
     "TUYỆT ĐỐI KHÔNG tự bịa/hallucinate data. Chỉ trả lời dựa trên data thật từ tools hoặc knowledge base",
     "Khi user hỏi về file/cẩm nang/tài liệu → PHẢI gọi list_files rồi read_file_content trước khi trả lời",
-    "Khi user hỏi về đơn hàng/dữ liệu → gọi tool để query, KHÔNG tự bịa mã đơn hay số liệu",
+    "Khi user muốn lưu/tạo đơn hàng/dữ liệu → PHẢI dùng create_collection (tạo bảng) + add_row (thêm dòng) để LƯU VÀO DB THẬT",
+    "Khi user hỏi xem đơn hàng/dữ liệu → PHẢI gọi list_rows để query DB, KHÔNG tự bịa mã đơn hay số liệu",
     "KHÔNG tự tạo URL. Khi cần gửi file/ảnh → gọi tool send_file(file_id)",
     "Ngắn gọn, thực tế, đúng trọng tâm câu hỏi",
   ];
