@@ -178,40 +178,23 @@ export async function executeTool(tool: string, args: Record<string, unknown>, t
         const tmpPath = `/tmp/img_${Date.now()}.${ext}`;
         writeFileSync(tmpPath, buffer);
 
-        // Call LLM with vision — use x-or API (OpenAI compatible with image support)
-        const { getConfig: gc2 } = await import("../config.js");
-        const config = gc2();
+        // Call Claude CLI with Read tool — vision through Max subscription
+        const { execFile } = await import("child_process");
+        const { promisify } = await import("util");
+        const execFileAsync = promisify(execFile);
 
-        const base64 = buffer.toString("base64");
-        const mediaType = file.mimeType ?? "image/jpeg";
         const prompt = (args.prompt as string) ?? "Mô tả chi tiết nội dung ảnh này. Nếu là sản phẩm thì mô tả màu sắc, kiểu dáng, chất liệu. Nếu là tài liệu/invoice thì trích xuất thông tin quan trọng.";
 
-        const resp = await fetch(`${config.WORKER_API_BASE}/chat/completions`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${config.WORKER_API_KEY}`,
-          },
-          body: JSON.stringify({
-            model: config.WORKER_MODEL,
-            messages: [{
-              role: "user",
-              content: [
-                { type: "image_url", image_url: { url: `data:${mediaType};base64,${base64}` } },
-                { type: "text", text: prompt },
-              ],
-            }],
-            max_tokens: 2048,
-          }),
-          signal: AbortSignal.timeout(60_000),
-        });
-
-        if (!resp.ok) throw new Error(`Vision API ${resp.status}`);
-        const data = (await resp.json()) as any;
-        const analysis = data.choices?.[0]?.message?.content ?? "Không phân tích được";
+        const { stdout } = await execFileAsync(
+          "claude",
+          ["--print", "--output-format", "text", "--max-turns", "3",
+           "--allowedTools", "Read",
+           "-p", `Read the file ${tmpPath} and then: ${prompt}`],
+          { encoding: "utf-8", timeout: 60_000, cwd: "/tmp", maxBuffer: 10 * 1024 * 1024 },
+        );
 
         try { unlinkSync(tmpPath); } catch {}
-        return { fileName: file.fileName, analysis };
+        return { fileName: file.fileName, analysis: (stdout ?? "").trim() };
       } catch (err: any) {
         return { error: `Vision failed: ${err.message}` };
       }
