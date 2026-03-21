@@ -16,6 +16,26 @@ export type AgentRecord = InferSelectModel<typeof agents>;
 
 export type LLMEngine = "fast-api" | "claude-cli";
 
+// ── Semaphore — limit concurrent Claude CLI processes ────────
+
+const MAX_CONCURRENT_CLI = 2; // 5.8GB RAM, each CLI ~150MB
+let _cliRunning = 0;
+const _cliQueue: (() => void)[] = [];
+
+function acquireCLI(): Promise<void> {
+  if (_cliRunning < MAX_CONCURRENT_CLI) {
+    _cliRunning++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => _cliQueue.push(() => { _cliRunning++; resolve(); }));
+}
+
+function releaseCLI(): void {
+  _cliRunning--;
+  const next = _cliQueue.shift();
+  if (next) next();
+}
+
 export interface ToolDefinition {
   name: string;
   description: string;
@@ -151,10 +171,12 @@ export class AgentRunner {
     userMessage: string,
     history: { role: string; content: string }[],
   ): Promise<string> {
-    const { execSync } = await import("child_process");
+    const { execFile } = await import("child_process");
+    const { promisify } = await import("util");
+    const execFileAsync = promisify(execFile);
+
     const prompt = this.buildPromptWithHistory(userMessage, history);
 
-    // Strong instruction to force tool_calls output
     const toolReminder = `
 
 BẮT BUỘC TUÂN THỦ:
@@ -168,20 +190,31 @@ BẮT BUỘC TUÂN THỦ:
 
     const fullPrompt = `${this.systemPrompt}${toolReminder}\n\n---\n\n${prompt}`;
 
+    await acquireCLI();
+    console.error(`[Agent:${this.agent.name}] CLI slot acquired (${_cliRunning}/${MAX_CONCURRENT_CLI}, queued: ${_cliQueue.length})`);
+
     try {
-      const result = execSync(
-        `claude --print --output-format text --max-turns 1`,
+      const child = execFileAsync(
+        "claude",
+        ["--print", "--output-format", "text", "--max-turns", "1"],
         {
-          input: fullPrompt,
           encoding: "utf-8",
           timeout: 60_000,
           cwd: "/tmp",
           maxBuffer: 10 * 1024 * 1024,
         },
       );
-      return result.trim();
+
+      // Write prompt to stdin
+      child.child.stdin?.write(fullPrompt);
+      child.child.stdin?.end();
+
+      const { stdout } = await child;
+      return (stdout ?? "").trim();
     } catch (err: any) {
       throw new Error(`Claude CLI failed: ${err.message?.substring(0, 200)}`);
+    } finally {
+      releaseCLI();
     }
   }
 
