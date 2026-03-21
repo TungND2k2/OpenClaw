@@ -162,12 +162,29 @@ export async function readFileContent(fileId: string): Promise<{
     const result = await mammoth.extractRawText({ buffer });
     content = result.value;
   } else if (mime === "application/pdf" || file.fileName.endsWith(".pdf")) {
+    // Try pdf-parse first
     try {
       const pdfParse = (await import("pdf-parse")).default;
       const result = await pdfParse(buffer);
-      content = result.text;
+      if (result.text && result.text.trim().length > 10) {
+        content = result.text;
+      } else {
+        throw new Error("Empty text");
+      }
     } catch {
-      content = `[PDF không đọc được: ${file.fileName}]`;
+      // Fallback: mutool (handles Google Sheets PDFs, scanned docs better)
+      try {
+        const { writeFileSync, unlinkSync, readFileSync } = await import("fs");
+        const { execSync } = await import("child_process");
+        const tmpIn = `/tmp/pdf_${Date.now()}.pdf`;
+        const tmpOut = `/tmp/pdf_${Date.now()}.txt`;
+        writeFileSync(tmpIn, buffer);
+        execSync(`mutool draw -F text "${tmpIn}" 2>/dev/null > "${tmpOut}"`, { timeout: 15000 });
+        content = readFileSync(tmpOut, "utf-8");
+        try { unlinkSync(tmpIn); unlinkSync(tmpOut); } catch {}
+      } catch {
+        content = `[PDF không đọc được: ${file.fileName}]`;
+      }
     }
   } else if (mime.includes("spreadsheetml") || file.fileName.endsWith(".xlsx") || file.fileName.endsWith(".xls")) {
     try {
