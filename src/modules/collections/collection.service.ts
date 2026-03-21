@@ -127,3 +127,38 @@ export async function deleteRow(rowId: string) {
   const result = await db.delete(collectionRows).where(eq(collectionRows.id, rowId)).returning({ id: collectionRows.id });
   return result.length > 0;
 }
+
+// ── Search All Rows (across all collections) ─────────────────
+
+export async function searchAllRows(tenantId: string, keyword?: string, limit = 50) {
+  const db = getDb();
+
+  // Get all active collections for tenant
+  const cols = await db.select({ id: collections.id, name: collections.name })
+    .from(collections)
+    .where(and(eq(collections.tenantId, tenantId), eq(collections.isActive, true)));
+
+  if (cols.length === 0) return [];
+
+  const results: { collection: string; id: string; data: unknown; createdAt: number }[] = [];
+
+  for (const col of cols) {
+    const rows = await db.select({
+      id: collectionRows.id, data: collectionRows.data, createdAt: collectionRows.createdAt,
+    }).from(collectionRows).where(eq(collectionRows.collectionId, col.id)).limit(limit);
+
+    for (const row of rows) {
+      const data = row.data as Record<string, unknown>;
+
+      // If keyword provided, filter rows containing it
+      if (keyword) {
+        const dataStr = JSON.stringify(data).toLowerCase();
+        if (!dataStr.includes(keyword.toLowerCase())) continue;
+      }
+
+      results.push({ collection: col.name, id: row.id, data: row.data, createdAt: row.createdAt });
+    }
+  }
+
+  return results;
+}

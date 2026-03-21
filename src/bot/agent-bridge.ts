@@ -27,7 +27,7 @@ import {
   workflowTemplates, formTemplates, businessRules,
   tenantUsers,
 } from "../db/schema.js";
-import { createCollection, listCollections, findCollection, insertRow, listRows, updateRow, deleteRow } from "../modules/collections/collection.service.js";
+import { createCollection, listCollections, findCollection, insertRow, listRows, updateRow, deleteRow, searchAllRows } from "../modules/collections/collection.service.js";
 import { newId } from "../utils/id.js";
 import { nowMs } from "../utils/clock.js";
 
@@ -318,6 +318,22 @@ export async function executeTool(tool: string, args: Record<string, unknown>, t
     case "delete_row": {
       const deleted = await deleteRow(args.row_id as string);
       return { deleted, row_id: args.row_id };
+    }
+
+    case "search_all": {
+      const rows = await searchAllRows(tenantId, (args.keyword as string) ?? undefined, (args.limit as number) ?? 50);
+      // Auto-resolve file names → S3 URLs
+      const allFiles = await listFiles(tenantId, 100);
+      for (const row of rows) {
+        const data = row.data as Record<string, unknown>;
+        for (const [key, value] of Object.entries(data)) {
+          if (typeof value === "string" && /\.(jpg|jpeg|png|gif|webp|pdf|docx)$/i.test(value)) {
+            const match = allFiles.find((f: any) => f.fileName === value);
+            if (match) data[key] = (match as any).s3Url;
+          }
+        }
+      }
+      return rows;
     }
 
     default: return { error: `Unknown tool: ${tool}` };
