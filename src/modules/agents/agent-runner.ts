@@ -144,7 +144,8 @@ export class AgentRunner {
   }
 
   /**
-   * Claude CLI — uses Max subscription via `claude` command.
+   * Claude CLI — uses Max subscription via `claude --print`.
+   * Free with Max account. Forces tool_calls output format.
    */
   private async callClaudeCLI(
     userMessage: string,
@@ -152,11 +153,19 @@ export class AgentRunner {
   ): Promise<string> {
     const { execSync } = await import("child_process");
     const prompt = this.buildPromptWithHistory(userMessage, history);
-    const toolReminder = `\n\nQUAN TRỌNG: Khi cần thao tác dữ liệu (tạo, xem, sửa, xoá), BẮT BUỘC output JSON block tool_calls. Ví dụ:
+
+    // Strong instruction to force tool_calls output
+    const toolReminder = `
+
+BẮT BUỘC TUÂN THỦ:
+1. Khi cần data (xem, tạo, sửa, xoá đơn/file/user) → OUTPUT tool_calls block TRƯỚC, KHÔNG trả lời text
+2. Format BẮT BUỘC:
 \`\`\`tool_calls
-[{"tool":"list_rows","args":{"collection":"đơn tìm vải"}}]
+[{"tool":"tên_tool","args":{"key":"value"}}]
 \`\`\`
-KHÔNG ĐƯỢC tự bịa data. PHẢI gọi tool trước.`;
+3. KHÔNG BAO GIỜ tự bịa/giả data. Nếu chưa gọi tool → chưa có data → PHẢI gọi tool
+4. Chỉ trả lời text khi: chào hỏi, giải thích chung, hoặc đã có tool result`;
+
     const fullPrompt = `${this.systemPrompt}${toolReminder}\n\n---\n\n${prompt}`;
 
     try {
