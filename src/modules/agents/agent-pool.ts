@@ -211,7 +211,16 @@ class AgentPool {
 
   private async seedDefaults(): Promise<void> {
     const existing = await listTemplates();
-    if (existing.length > 0) return;
+    if (existing.length > 0) {
+      // Ensure Commander template uses claude-cli
+      const cmdTmpl = existing.find(t => t.role === "commander" && t.engine !== "claude-cli");
+      if (cmdTmpl) {
+        const { updateTemplate } = await import("./template.service.js");
+        await updateTemplate(cmdTmpl.id, { engine: "claude-cli" });
+        console.error("[AgentPool] Updated Commander template → claude-cli");
+      }
+      return;
+    }
 
     console.error("[AgentPool] First boot — seeding default templates...");
 
@@ -221,7 +230,7 @@ class AgentPool {
       systemPrompt: "Bạn là Commander — bộ não trung tâm. Phân tích yêu cầu, phân rã task phức tạp, giao cho Workers/Supervisors, tổng hợp kết quả.",
       capabilities: ["reasoning", "planning", "decomposition", "knowledge", "file-analysis"],
       tools: [], // all tools
-      engine: "fast-api",
+      engine: "claude-cli",
       maxConcurrentTasks: 5,
       autoSpawn: true,
       autoSpawnCount: 1,

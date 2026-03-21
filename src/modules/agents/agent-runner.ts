@@ -14,7 +14,7 @@ import type { agents } from "../../db/schemas/agents.js";
 
 export type AgentRecord = InferSelectModel<typeof agents>;
 
-export type LLMEngine = "fast-api";
+export type LLMEngine = "fast-api" | "claude-cli";
 
 export interface ToolDefinition {
   name: string;
@@ -131,13 +131,44 @@ export class AgentRunner {
   }
 
   /**
-   * Call the LLM — all agents use fast API.
+   * Call the LLM — route to the right engine.
    */
   private async callLLM(
     userMessage: string,
     history: { role: string; content: string }[],
   ): Promise<string> {
+    if (this.engine === "claude-cli") {
+      return this.callClaudeCLI(userMessage, history);
+    }
     return this.callFastAPI(userMessage, history);
+  }
+
+  /**
+   * Claude CLI — uses Max subscription via `claude` command.
+   */
+  private async callClaudeCLI(
+    userMessage: string,
+    history: { role: string; content: string }[],
+  ): Promise<string> {
+    const { execSync } = await import("child_process");
+    const prompt = this.buildPromptWithHistory(userMessage, history);
+    const fullPrompt = `${this.systemPrompt}\n\n---\n\n${prompt}`;
+
+    try {
+      const result = execSync(
+        `claude --print --output-format text --max-turns 1`,
+        {
+          input: fullPrompt,
+          encoding: "utf-8",
+          timeout: 60_000,
+          cwd: "/tmp",
+          maxBuffer: 10 * 1024 * 1024,
+        },
+      );
+      return result.trim();
+    } catch (err: any) {
+      throw new Error(`Claude CLI failed: ${err.message?.substring(0, 200)}`);
+    }
   }
 
   /**

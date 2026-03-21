@@ -16,7 +16,7 @@ export interface CreateTemplateInput {
   systemPrompt: string;
   capabilities?: string[];
   tools?: string[];         // empty = all tools allowed
-  engine?: "claude-sdk" | "fast-api";
+  engine?: "claude-sdk" | "claude-cli" | "fast-api";
   maxConcurrentTasks?: number;
   maxToolLoops?: number;
   costBudgetUsd?: number;
