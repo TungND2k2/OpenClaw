@@ -151,23 +151,40 @@ export async function executeTool(tool: string, args: Record<string, unknown>, t
     case "get_file": return await getFile(args.file_id as string);
 
     case "set_user_role": {
+      const channel = (args.channel as string) ?? "telegram";
+      let channelUserId = (args.channel_user_id as string) ?? "";
+
+      // If LLM passed username instead of numeric ID, find the real ID from DB
+      if (channelUserId && !/^\d+$/.test(channelUserId)) {
+        const allUsers = await db.select({ channelUserId: tenantUsers.channelUserId, displayName: tenantUsers.displayName })
+          .from(tenantUsers).where(eq(tenantUsers.tenantId, tenantId));
+        const match = allUsers.find(u =>
+          u.displayName?.toLowerCase().includes(channelUserId.toLowerCase()) ||
+          channelUserId.toLowerCase().includes(u.displayName?.toLowerCase() ?? "___")
+        );
+        if (match) {
+          channelUserId = match.channelUserId;
+        } else {
+          return { error: `User "${args.channel_user_id}" không tìm thấy. Dùng list_users để xem danh sách.` };
+        }
+      }
+
       const existing = (await db.select({ id: tenantUsers.id }).from(tenantUsers)
-        .where(and(eq(tenantUsers.tenantId, tenantId), eq(tenantUsers.channel, args.channel as string), eq(tenantUsers.channelUserId, args.channel_user_id as string))).limit(1))[0];
+        .where(and(eq(tenantUsers.tenantId, tenantId), eq(tenantUsers.channel, channel), eq(tenantUsers.channelUserId, channelUserId))).limit(1))[0];
       if (existing) {
         await db.update(tenantUsers).set({ role: args.role as any, displayName: (args.display_name as string) ?? undefined, updatedAt: now })
           .where(eq(tenantUsers.id, existing.id));
       } else {
-        await db.insert(tenantUsers).values({
-          id: newId(), tenantId, channel: args.channel as string, channelUserId: args.channel_user_id as string,
-          displayName: (args.display_name as string) ?? null, role: (args.role as any) ?? "user", isActive: true, createdAt: now, updatedAt: now,
-        });
+        return { error: `User ID "${channelUserId}" không tồn tại trong hệ thống.` };
       }
-      return { success: true, role: args.role };
+      return { success: true, channel_user_id: channelUserId, role: args.role };
     }
 
     case "list_users": {
-      return await db.select({ channelUserId: tenantUsers.channelUserId, channel: tenantUsers.channel, displayName: tenantUsers.displayName, role: tenantUsers.role })
-        .from(tenantUsers).where(eq(tenantUsers.tenantId, tenantId));
+      return await db.select({
+        channelUserId: tenantUsers.channelUserId, channel: tenantUsers.channel,
+        displayName: tenantUsers.displayName, role: tenantUsers.role, isActive: tenantUsers.isActive,
+      }).from(tenantUsers).where(eq(tenantUsers.tenantId, tenantId));
     }
 
     // ── AI Config Tools (admin edits bot behavior via chat) ──
