@@ -110,6 +110,112 @@ export async function retrieveKnowledge(context: {
 }
 
 /**
+ * Merge or create a rule by intent (tool combination).
+ * Same tools = same intent → merge keywords, bump use_count.
+ * Different tools = new intent → create new rule.
+ */
+export async function mergeOrCreateRule(input: {
+  tools: string[];
+  keywords: string[];
+  sourceAgentId: string;
+  tenantId?: string;
+}): Promise<{ action: "merged" | "created" | "skipped"; ruleId: string }> {
+  const db = getDb();
+  const now = nowMs();
+
+  // Deduplicate + sort tools to create stable intent key
+  const intentKey = [...new Set(input.tools)].sort().join(",");
+  const newKeywords = input.keywords.filter(k => k.length > 2);
+
+  if (newKeywords.length === 0) {
+    return { action: "skipped", ruleId: "" };
+  }
+
+  // Find existing rule with same intent (same tool combination)
+  const allRules = await db.select().from(knowledgeEntries)
+    .where(and(
+      eq(knowledgeEntries.type, "best_practice"),
+      sql`${knowledgeEntries.supersededById} IS NULL`,
+    )).limit(200);
+
+  const existing = allRules.find(r => {
+    const content = r.content as string;
+    // Extract tools from content: "→ gọi tools: X, Y"
+    const toolMatch = content.match(/tools:\s*(.+)/);
+    if (!toolMatch) return false;
+    const existingTools = toolMatch[1].split(",").map(t => t.trim()).sort().join(",");
+    return existingTools === intentKey;
+  });
+
+  if (existing) {
+    // Merge: add new keywords, bump use_count
+    const existingTags = typeof existing.tags === "string"
+      ? JSON.parse(existing.tags as string) as string[]
+      : (existing.tags as string[]) ?? [];
+
+    const mergedKeywords = [...new Set([...existingTags, ...newKeywords])];
+
+    await db.update(knowledgeEntries).set({
+      tags: JSON.stringify(mergedKeywords),
+      usageCount: (existing.usageCount ?? 0) + 1,
+      updatedAt: now,
+    }).where(eq(knowledgeEntries.id, existing.id));
+
+    return { action: "merged", ruleId: existing.id };
+  }
+
+  // Create new rule
+  const toolNames = [...new Set(input.tools)].join(", ");
+  const entry = await storeKnowledge({
+    type: "best_practice",
+    title: `Intent: ${intentKey}`,
+    content: `Khi user hỏi về [${newKeywords.join(", ")}] → gọi tools: ${toolNames}`,
+    domain: "general",
+    tags: newKeywords,
+    sourceAgentId: input.sourceAgentId,
+    outcome: "success",
+  });
+
+  return { action: "created", ruleId: entry.id };
+}
+
+/**
+ * Cleanup old, low-usage rules.
+ * Call periodically (e.g. daily via orchestrator).
+ */
+export async function cleanupRules(maxRules = 200, minAge = 7 * 24 * 60 * 60 * 1000): Promise<number> {
+  const db = getDb();
+  const now = nowMs();
+  const cutoff = now - minAge;
+
+  // Delete rules: use_count < 2 AND older than minAge
+  const deleted = await db.delete(knowledgeEntries).where(and(
+    eq(knowledgeEntries.type, "best_practice"),
+    sql`${knowledgeEntries.usageCount} < 2`,
+    sql`${knowledgeEntries.createdAt} < ${cutoff}`,
+  )).returning({ id: knowledgeEntries.id });
+
+  // If still over max, delete lowest use_count
+  const remaining = await db.select({ id: knowledgeEntries.id }).from(knowledgeEntries)
+    .where(eq(knowledgeEntries.type, "best_practice"));
+
+  if (remaining.length > maxRules) {
+    const toDelete = remaining.length - maxRules;
+    const lowest = await db.select({ id: knowledgeEntries.id }).from(knowledgeEntries)
+      .where(eq(knowledgeEntries.type, "best_practice"))
+      .orderBy(sql`${knowledgeEntries.usageCount} ASC, ${knowledgeEntries.createdAt} ASC`)
+      .limit(toDelete);
+
+    for (const row of lowest) {
+      await db.delete(knowledgeEntries).where(eq(knowledgeEntries.id, row.id));
+    }
+    return deleted.length + lowest.length;
+  }
+
+  return deleted.length;
+}
+
+/**
  * Record that knowledge was applied to a task.
  */
 export async function recordApplication(input: {

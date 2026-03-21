@@ -13,7 +13,7 @@
 import { getDb } from "../db/connection.js";
 import { eq, and } from "drizzle-orm";
 import { notebookWrite } from "../modules/notebooks/notebook.service.js";
-import { storeKnowledge, retrieveKnowledge } from "../modules/knowledge/knowledge.service.js";
+import { storeKnowledge, retrieveKnowledge, mergeOrCreateRule } from "../modules/knowledge/knowledge.service.js";
 import { getDashboard } from "../modules/monitoring/monitor.service.js";
 import { startWorkflow } from "../modules/workflows/workflow-engine.service.js";
 import { getFile, listFiles, readFileContent } from "../modules/storage/s3.service.js";
@@ -482,24 +482,16 @@ export async function processWithCommander(input: {
     }
     await updatePerformance(commanderAgentId, true);
 
-    // ── Step 6: Self-learning (rules only, NOT raw data) ───
+    // ── Step 6: Self-learning (intent-based, auto-merge) ────
     if (result.toolCalls.length > 0) {
-      const toolNames = result.toolCalls.map(t => t.tool).join(", ");
-      // Extract RULE/PATTERN, not cache response data
-      const intentKeywords = keywords.slice(0, 3).join(" ");
-      const rule = `Khi user hỏi về "${intentKeywords}" → gọi tools: ${toolNames}`;
       try {
-        await storeKnowledge({
-          type: "best_practice",
-          title: `Rule: ${intentKeywords} → ${toolNames}`,
-          content: rule,
-          domain: "general",
-          tags: [...keywords.slice(0, 5), ...result.toolCalls.map(t => t.tool)],
+        const tools = result.toolCalls.map(t => t.tool);
+        const { action, ruleId } = await mergeOrCreateRule({
+          tools,
+          keywords,
           sourceAgentId: commanderAgentId,
-          sourceTaskId: task?.id,
-          outcome: "success",
         });
-        console.error(`[Pipeline] ✓ Rule saved: ${rule}`);
+        console.error(`[Pipeline] ✓ Knowledge ${action}: ${[...new Set(tools)].join(",")} (${ruleId.substring(0, 8)})`);
       } catch (ke: any) {
         console.error(`[Pipeline] Knowledge save warn: ${ke.message}`);
       }
