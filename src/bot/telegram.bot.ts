@@ -547,7 +547,7 @@ async function pollLoop(): Promise<void> {
 
 // ── File upload handler ──────────────────────────────────────
 
-const ALLOWED_MIME_PREFIXES = ["image/", "application/pdf", "text/", "application/vnd", "application/json", "audio/", "video/"];
+const ALLOWED_MIME_PREFIXES = ["image/", "application/pdf", "text/", "application/vnd", "application/json", "application/octet-stream", "application/zip", "audio/", "video/"];
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
 
 async function handleFileUpload(
@@ -558,10 +558,11 @@ async function handleFileUpload(
   tenantId: string
 ): Promise<void> {
   const chatId = msg.chat.id;
+  const isPhoto = !!msg.photo;
   const fileId = fileObj.file_id;
   const fileSize = fileObj.file_size ?? 0;
-  const fileName = fileObj.file_name ?? `file_${Date.now()}`;
-  const mimeType = fileObj.mime_type ?? "application/octet-stream";
+  const fileName = fileObj.file_name ?? (isPhoto ? `photo_${Date.now()}.jpg` : `file_${Date.now()}`);
+  const mimeType = fileObj.mime_type ?? (isPhoto ? "image/jpeg" : "application/octet-stream");
 
   // Size check
   if (fileSize > MAX_FILE_SIZE) {
