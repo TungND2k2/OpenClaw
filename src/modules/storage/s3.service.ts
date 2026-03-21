@@ -129,7 +129,7 @@ export async function downloadFile(fileId: string): Promise<{
 }
 
 /**
- * Read file content as text. Supports: TXT, CSV, JSON, DOCX, PDF (basic).
+ * Read file content as text. Supports: TXT, CSV, JSON, DOCX, PDF, XLSX.
  */
 export async function readFileContent(fileId: string): Promise<{
   content: string;
@@ -161,11 +161,28 @@ export async function readFileContent(fileId: string): Promise<{
   } else if (mime.includes("wordprocessingml") || file.fileName.endsWith(".docx")) {
     const result = await mammoth.extractRawText({ buffer });
     content = result.value;
-  } else if (mime === "application/pdf") {
-    // Basic PDF text extraction — just look for text streams
-    const text = buffer.toString("utf-8");
-    const matches = text.match(/\(([^)]+)\)/g);
-    content = matches ? matches.map(m => m.slice(1, -1)).join(" ") : "[PDF content — cannot extract text without pdf-parse library]";
+  } else if (mime === "application/pdf" || file.fileName.endsWith(".pdf")) {
+    try {
+      const pdfParse = (await import("pdf-parse")).default;
+      const result = await pdfParse(buffer);
+      content = result.text;
+    } catch {
+      content = `[PDF không đọc được: ${file.fileName}]`;
+    }
+  } else if (mime.includes("spreadsheetml") || file.fileName.endsWith(".xlsx") || file.fileName.endsWith(".xls")) {
+    try {
+      const XLSX = await import("xlsx");
+      const workbook = XLSX.read(buffer, { type: "buffer" });
+      const sheets: string[] = [];
+      for (const name of workbook.SheetNames) {
+        const sheet = workbook.Sheets[name];
+        const csv = XLSX.utils.sheet_to_csv(sheet);
+        sheets.push(`=== Sheet: ${name} ===\n${csv}`);
+      }
+      content = sheets.join("\n\n");
+    } catch {
+      content = `[Excel không đọc được: ${file.fileName}]`;
+    }
   } else {
     content = `[Binary file: ${file.fileName} (${file.mimeType}, ${file.fileSize} bytes)]`;
   }
