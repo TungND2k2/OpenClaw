@@ -399,7 +399,7 @@ export async function executeTool(tool: string, args: Record<string, unknown>, t
     }
 
     case "search_all": {
-      const rows = await searchAllRows(tenantId, (args.keyword as string) ?? undefined, (args.limit as number) ?? 50);
+      const rows = await searchAllRows(tenantId, (args.keyword as string) ?? undefined, (args.limit as number) ?? 20);
       // Auto-resolve file names → S3 URLs
       const allFiles = await listFiles(tenantId, 100);
       for (const row of rows) {
@@ -617,6 +617,9 @@ function buildCommanderPrompt(
     "Khi user muốn lưu/tạo đơn hàng/dữ liệu → PHẢI dùng create_collection (tạo bảng) + add_row (thêm dòng) để LƯU VÀO DB THẬT",
     "Khi user hỏi xem đơn hàng/dữ liệu → PHẢI gọi list_rows để query DB, KHÔNG tự bịa mã đơn hay số liệu",
     "KHÔNG tự tạo URL. Khi cần gửi file/ảnh → gọi tool send_file(file_id)",
+    "Khi user tìm kiếm data mà KHÔNG nói rõ khoảng thời gian/bộ lọc → HỎI LẠI: 'Bạn muốn xem tất cả hay lọc theo thời gian/trạng thái?' trước khi gọi search_all",
+    "list_rows/search_all có hỗ trợ keyword filter — dùng search_all(keyword='từ khoá') để lọc, KHÔNG load hết rồi lọc bằng text",
+    "Khi kết quả > 20 rows → trả summary (tổng, phân loại) + hỏi user muốn xem chi tiết phần nào",
     "Ngắn gọn, thực tế, đúng trọng tâm câu hỏi",
   ];
   const rules = [...defaultRules, ...((cfg.rules as string[]) ?? [])];
