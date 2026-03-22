@@ -261,6 +261,49 @@ WORKER_MODEL=gpt-4o-mini
 
 ---
 
+## Docs
+
+| Doc | Nội dung |
+|-----|----------|
+| [FORM-STATE.md](docs/FORM-STATE.md) | Multi-step form persistent — summary + form state |
+| [ROADMAP-LEARNED-ROUTING.md](docs/ROADMAP-LEARNED-ROUTING.md) | Tự học engine routing CLI/fast-api (PENDING) |
+
+---
+
+## Changelog
+
+### v0.4.0 — Form State + Conversation Summary
+- **Conversation Summary**: auto tóm tắt mỗi 10 messages → giữ summary + 5 recent → tiết kiệm tokens
+- **Form State**: multi-step form lưu per-user session trong DB → không mất data khi history dài
+- **Tools mới**: `start_form`, `update_form_field`, `get_form_state`, `cancel_form`
+- **Auto-save**: form complete → `add_row` vào collection (TODO)
+
+### v0.3.0 — PostgreSQL + Smart Search
+- Chuyển SQLite → **PostgreSQL** (data persistent, remote access)
+- **Smart search**: `search_all(keyword)` filter DB trước khi gửi LLM
+- **Pagination**: > 20 rows → trả summary + hint xem tiếp
+- **Knowledge dedup**: merge rules cùng intent, tăng `usage_count`
+
+### v0.2.0 — Agent System + Self-Learning
+- **Agent Templates**: tạo agent qua chat, không code
+- **AgentPool**: Commander + Workers spawn từ templates
+- **Self-learning**: 34 rules tự học từ hội thoại (intent-based merge)
+- **Business Rules**: phân loại task theo bộ phận (Sản xuất, Marketing, Sales, Kế toán)
+- **Dynamic Collections**: admin tạo bảng qua chat, CRUD data thật trong DB
+- **Image Vision**: phân tích ảnh qua LLM CLI + Read tool
+- **File parsing**: PDF (mutool fallback), DOCX (mammoth), XLSX
+- **S3 Storage**: upload files từ Telegram → S3
+
+### v0.1.0 — Foundation
+- Telegram bot + message queue (5 concurrent)
+- MCP server (66 tools)
+- Orchestrator (health check, task dispatch, DAG rollup)
+- Role-based access (admin → manager → sales/staff/user)
+- User registration (`/register` → admin approve)
+- Progress messages (edit cùng 1 message)
+
+---
+
 ## License
 
 Private — OpenClaw by TungND2k2
