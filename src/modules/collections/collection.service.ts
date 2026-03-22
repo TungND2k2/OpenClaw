@@ -4,7 +4,7 @@
 
 import { getDb } from "../../db/connection.js";
 import { collections, collectionRows } from "../../db/schemas/collections.js";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { newId } from "../../utils/id.js";
 
 // ── Types ────────────────────────────────────────────────────
@@ -99,13 +99,54 @@ export async function insertRow(input: {
   return { id, ...input.data };
 }
 
-// ── List Rows ────────────────────────────────────────────────
+// ── List Rows (with pagination + smart search) ──────────────
 
-export async function listRows(collectionId: string, limit = 50) {
+export async function listRows(
+  collectionId: string,
+  limit = 20,
+  offset = 0,
+  keyword?: string,
+) {
   const db = getDb();
-  return db.select({
+
+  // If keyword → filter in PostgreSQL using JSON text search
+  if (keyword) {
+    const rows = await db.select({
+      id: collectionRows.id, data: collectionRows.data, createdAt: collectionRows.createdAt,
+    }).from(collectionRows)
+      .where(and(
+        eq(collectionRows.collectionId, collectionId),
+        sql`${collectionRows.data}::text ILIKE ${'%' + keyword + '%'}`,
+      ))
+      .orderBy(sql`${collectionRows.createdAt} DESC`)
+      .limit(limit).offset(offset);
+
+    // Get total count for pagination
+    const countResult = await db.select({ count: sql<number>`count(*)` })
+      .from(collectionRows)
+      .where(and(
+        eq(collectionRows.collectionId, collectionId),
+        sql`${collectionRows.data}::text ILIKE ${'%' + keyword + '%'}`,
+      ));
+
+    const total = Number(countResult[0]?.count ?? 0);
+    return { rows, total, hasMore: offset + limit < total };
+  }
+
+  // No keyword → simple pagination
+  const rows = await db.select({
     id: collectionRows.id, data: collectionRows.data, createdAt: collectionRows.createdAt,
-  }).from(collectionRows).where(eq(collectionRows.collectionId, collectionId)).limit(limit);
+  }).from(collectionRows)
+    .where(eq(collectionRows.collectionId, collectionId))
+    .orderBy(sql`${collectionRows.createdAt} DESC`)
+    .limit(limit).offset(offset);
+
+  const countResult = await db.select({ count: sql<number>`count(*)` })
+    .from(collectionRows)
+    .where(eq(collectionRows.collectionId, collectionId));
+
+  const total = Number(countResult[0]?.count ?? 0);
+  return { rows, total, hasMore: offset + limit < total };
 }
 
 // ── Update Row ───────────────────────────────────────────────
@@ -128,9 +169,9 @@ export async function deleteRow(rowId: string) {
   return result.length > 0;
 }
 
-// ── Search All Rows (across all collections) ─────────────────
+// ── Search All Rows (across all collections — SQL-level filter) ──
 
-export async function searchAllRows(tenantId: string, keyword?: string, limit = 50) {
+export async function searchAllRows(tenantId: string, keyword?: string, limit = 20) {
   const db = getDb();
 
   // Get all active collections for tenant
@@ -143,22 +184,35 @@ export async function searchAllRows(tenantId: string, keyword?: string, limit = 
   const results: { collection: string; id: string; data: unknown; createdAt: number }[] = [];
 
   for (const col of cols) {
+    // Filter in PostgreSQL, not in memory
+    const whereConditions = keyword
+      ? and(
+          eq(collectionRows.collectionId, col.id),
+          sql`${collectionRows.data}::text ILIKE ${'%' + keyword + '%'}`,
+        )
+      : eq(collectionRows.collectionId, col.id);
+
     const rows = await db.select({
       id: collectionRows.id, data: collectionRows.data, createdAt: collectionRows.createdAt,
-    }).from(collectionRows).where(eq(collectionRows.collectionId, col.id)).limit(limit);
+    }).from(collectionRows)
+      .where(whereConditions)
+      .orderBy(sql`${collectionRows.createdAt} DESC`)
+      .limit(limit);
 
     for (const row of rows) {
-      const data = row.data as Record<string, unknown>;
-
-      // If keyword provided, filter rows containing it
-      if (keyword) {
-        const dataStr = JSON.stringify(data).toLowerCase();
-        if (!dataStr.includes(keyword.toLowerCase())) continue;
-      }
-
       results.push({ collection: col.name, id: row.id, data: row.data, createdAt: row.createdAt });
     }
   }
 
   return results;
+}
+
+// ── Count Rows (for summary when too many) ──────────────────
+
+export async function countRows(collectionId: string): Promise<number> {
+  const db = getDb();
+  const result = await db.select({ count: sql<number>`count(*)` })
+    .from(collectionRows)
+    .where(eq(collectionRows.collectionId, collectionId));
+  return Number(result[0]?.count ?? 0);
 }

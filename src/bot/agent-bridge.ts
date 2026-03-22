@@ -27,7 +27,7 @@ import {
   workflowTemplates, formTemplates, businessRules,
   tenantUsers,
 } from "../db/schema.js";
-import { createCollection, listCollections, findCollection, insertRow, listRows, updateRow, deleteRow, searchAllRows } from "../modules/collections/collection.service.js";
+import { createCollection, listCollections, findCollection, insertRow, listRows, updateRow, deleteRow, searchAllRows, countRows } from "../modules/collections/collection.service.js";
 import { newId } from "../utils/id.js";
 import { nowMs } from "../utils/clock.js";
 
@@ -363,22 +363,30 @@ export async function executeTool(tool: string, args: Record<string, unknown>, t
         if (!col) return { error: `Collection "${args.collection ?? args.collection_id}" không tồn tại` };
         collectionId = col.id;
       }
-      const rows = await listRows(collectionId, (args.limit as number) ?? 50);
+      const result = await listRows(
+        collectionId,
+        (args.limit as number) ?? 20,
+        (args.offset as number) ?? 0,
+        (args.keyword as string) ?? undefined,
+      );
 
       // Auto-resolve file names → S3 URLs
       const allFiles = await listFiles(tenantId, 100);
-      for (const row of rows) {
+      for (const row of result.rows) {
         const data = row.data as Record<string, unknown>;
         for (const [key, value] of Object.entries(data)) {
           if (typeof value === "string" && /\.(jpg|jpeg|png|gif|webp|pdf|docx)$/i.test(value)) {
             const match = allFiles.find((f: any) => f.fileName === value);
-            if (match) {
-              data[key] = (match as any).s3Url;
-            }
+            if (match) data[key] = (match as any).s3Url;
           }
         }
       }
-      return rows;
+
+      // Pagination info for LLM
+      if (result.hasMore) {
+        return { rows: result.rows, total: result.total, showing: result.rows.length, hasMore: true, hint: `Còn ${result.total - result.rows.length} rows. Dùng offset=${result.rows.length} để xem tiếp.` };
+      }
+      return { rows: result.rows, total: result.total };
     }
 
     case "update_row": {
