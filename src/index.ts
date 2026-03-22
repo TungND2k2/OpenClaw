@@ -8,6 +8,7 @@ import { startProxy, stopProxy } from "./proxy/proxy.service.js";
 import { startTelegramBot, stopTelegramBot } from "./bot/telegram.bot.js";
 import { initAgentPool } from "./modules/agents/agent-pool.js";
 import { executeTool } from "./bot/agent-bridge.js";
+import { cleanupDuplicateRules } from "./modules/knowledge/knowledge.service.js";
 
 async function main() {
   // 1. Load config
@@ -24,6 +25,9 @@ async function main() {
     toolExecutor: executeTool,
   });
   console.error(`[OpenClaw] Agent pool ready`);
+
+  // 3b. Cleanup duplicate knowledge rules
+  await cleanupDuplicateRules();
 
   // 4. Create MCP server
   const server = createMcpServer();

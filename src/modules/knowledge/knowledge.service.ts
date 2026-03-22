@@ -216,6 +216,58 @@ export async function cleanupRules(maxRules = 200, minAge = 7 * 24 * 60 * 60 * 1
 }
 
 /**
+ * Cleanup duplicate rules — group by tools signature, keep highest usage_count.
+ * Run on startup.
+ */
+export async function cleanupDuplicateRules(): Promise<number> {
+  const db = getDb();
+  const now = nowMs();
+
+  const all = await db.select().from(knowledgeEntries)
+    .where(eq(knowledgeEntries.type, "best_practice"));
+
+  // Group by tools signature (extracted from content)
+  const groups = new Map<string, typeof all>();
+  for (const entry of all) {
+    const toolsMatch = entry.content.match(/tools?:\s*(.+)/i);
+    if (!toolsMatch) continue;
+    const sig = toolsMatch[1].split(",").map(t => t.trim()).sort().join(",");
+    if (!groups.has(sig)) groups.set(sig, []);
+    groups.get(sig)!.push(entry);
+  }
+
+  let deletedCount = 0;
+  for (const [, entries] of groups) {
+    if (entries.length <= 1) continue;
+
+    // Keep the one with highest usage_count
+    entries.sort((a, b) => (b.usageCount ?? 0) - (a.usageCount ?? 0));
+    const keep = entries[0];
+    const duplicates = entries.slice(1);
+
+    // Merge keywords/tags from duplicates into the kept entry
+    const allTags = new Set(keep.tags as string[] ?? []);
+    for (const dup of duplicates) {
+      for (const tag of (dup.tags as string[] ?? [])) allTags.add(tag);
+    }
+
+    await db.update(knowledgeEntries)
+      .set({ tags: [...allTags], updatedAt: now })
+      .where(eq(knowledgeEntries.id, keep.id));
+
+    for (const dup of duplicates) {
+      await db.delete(knowledgeEntries).where(eq(knowledgeEntries.id, dup.id));
+      deletedCount++;
+    }
+  }
+
+  if (deletedCount > 0) {
+    console.error(`[Knowledge] Cleaned up ${deletedCount} duplicate rules`);
+  }
+  return deletedCount;
+}
+
+/**
  * Record that knowledge was applied to a task.
  */
 export async function recordApplication(input: {

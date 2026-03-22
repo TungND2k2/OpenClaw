@@ -22,7 +22,7 @@ import { createTask, assignTask, startTask, completeTask, failTask } from "../mo
 import { recordDecision } from "../modules/decisions/decision.service.js";
 import { updatePerformance, heartbeat } from "../modules/agents/agent.service.js";
 import { getCommander } from "../modules/agents/agent-pool.js";
-import { AgentRunner } from "../modules/agents/agent-runner.js";
+import { AgentRunner, detectEngine } from "../modules/agents/agent-runner.js";
 import {
   workflowTemplates, formTemplates, businessRules,
   tenantUsers,
@@ -505,10 +505,14 @@ export async function processWithCommander(input: {
     send_file: "📤 Đang gửi file...",
   };
 
-  // Create a per-request runner with the right context + tool executor
+  // Hybrid routing — simple questions → fast-api (2s), complex → CLI (15s)
+  const topScore = knowledge.length > 0 ? knowledge[0].matchScore : 0;
+  const effectiveEngine = detectEngine(input.userMessage, topScore, true);
+  console.error(`[Pipeline] Engine: ${effectiveEngine} (score: ${topScore.toFixed(2)})`);
+
   const runner = new AgentRunner({
     agent: commander.agent,
-    engine: commander.engine,
+    engine: effectiveEngine,
     tools: [],
     systemPrompt,
     executeTool: async (tool, args) => {
