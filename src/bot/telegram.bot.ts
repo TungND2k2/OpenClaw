@@ -22,14 +22,21 @@ import { downloadAndUpload } from "../modules/storage/s3.service.js";
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
 let _running = false;
-let _offset = 0;
 let _queue: MessageQueue;
 
-// ── Telegram API ─────────────────────────────────────────────
+// ── Multi-bot state ──────────────────────────────────────────
+interface BotInstance {
+  tenantId: string;
+  tenantName: string;
+  token: string;
+  username: string;
+  offset: number;
+}
+const _bots = new Map<string, BotInstance>(); // tenantId → BotInstance
 
-async function callTelegram(method: string, params: Record<string, unknown>): Promise<any> {
-  const token = getConfig().TELEGRAM_BOT_TOKEN;
-  if (!token) throw new Error("No bot token");
+// ── Telegram API (token-based, not config-based) ─────────────
+
+async function callTelegramWithToken(token: string, method: string, params: Record<string, unknown>): Promise<any> {
   const res = await fetch(`${TELEGRAM_API}${token}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -39,6 +46,13 @@ async function callTelegram(method: string, params: Record<string, unknown>): Pr
   const body = await res.json() as { ok: boolean; result?: any; description?: string };
   if (!body.ok) throw new Error(`Telegram: ${body.description}`);
   return body.result;
+}
+
+// Backward-compatible wrapper — uses first bot's token or config
+async function callTelegram(method: string, params: Record<string, unknown>): Promise<any> {
+  const token = getConfig().TELEGRAM_BOT_TOKEN ?? _bots.values().next().value?.token;
+  if (!token) throw new Error("No bot token");
+  return callTelegramWithToken(token, method, params);
 }
 
 async function sendTelegramMessage(chatId: string | number, text: string): Promise<number | undefined> {
@@ -369,22 +383,14 @@ async function handleJob(job: QueueJob): Promise<void> {
 
 // ── Poll loop — lightweight, just enqueues ───────────────────
 
-async function pollLoop(): Promise<void> {
-  const config = getConfig();
-  const tenantId = config.TELEGRAM_DEFAULT_TENANT_ID!;
-
-  while (_running) {
-    try {
-      const updates = await callTelegram("getUpdates", {
-        offset: _offset, timeout: 30, allowed_updates: ["message"],
-      });
-
-      for (const update of updates ?? []) {
-        _offset = update.update_id + 1;
-        const msg = update.message;
-        if (!msg) continue;
-
-        const userId = String(msg.from.id);
+/**
+ * Process a single Telegram update — handles registration, commands, messages.
+ */
+async function processUpdate(
+  msg: any, userId: string, _userName: string, _userRole: string | null,
+  tenantId: string, botToken: string,
+): Promise<void> {
+  {
         const telegramName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(" ") || msg.from.username || "User";
         const userInfo = await getUserInfo(userId, tenantId);
         const userRole = userInfo.role;
@@ -403,7 +409,7 @@ async function pollLoop(): Promise<void> {
           if (text === "/cancel") {
             _registrations.delete(regKey);
             await sendTelegramMessage(msg.chat.id, "❌ Đã huỷ đăng ký.");
-            continue;
+            return;
           }
 
           if (regState.step === "name") {
@@ -458,7 +464,7 @@ async function pollLoop(): Promise<void> {
               await sendTelegramMessage(msg.chat.id, "Gõ <b>OK</b> để xác nhận, hoặc /cancel để huỷ.");
             }
           }
-          continue;
+          return;
         }
 
         // ── Access control ──
@@ -496,7 +502,7 @@ async function pollLoop(): Promise<void> {
               `⛔ Bạn chưa đăng ký.\n\nGõ /register để đăng ký, hoặc /start để xem hướng dẫn.`
             );
           }
-          continue;
+          return;
         }
 
         // ── Admin commands: /approve, /reject, /pending ──
@@ -513,7 +519,7 @@ async function pollLoop(): Promise<void> {
             } else {
               await sendTelegramMessage(msg.chat.id, `❌ Không tìm thấy user ${targetId}`);
             }
-            continue;
+            return;
           }
 
           const rejectMatch = msg.text.match(/^\/reject\s+(\d+)$/);
@@ -527,7 +533,7 @@ async function pollLoop(): Promise<void> {
             } else {
               await sendTelegramMessage(msg.chat.id, `Không tìm thấy user pending ${targetId}`);
             }
-            continue;
+            return;
           }
 
           if (msg.text.trim() === "/pending") {
@@ -541,7 +547,7 @@ async function pollLoop(): Promise<void> {
               }).join("\n\n");
               await sendTelegramMessage(msg.chat.id, `📋 <b>Đang chờ duyệt (${pending.length}):</b>\n\n${list}`);
             }
-            continue;
+            return;
           }
 
           // ── Permission commands: /grant, /deny, /revoke ──
@@ -559,7 +565,7 @@ async function pollLoop(): Promise<void> {
             const canManage = await cp(tenantId, userId, userRole, resource, "manage");
             if (!canManage.allowed) {
               await sendTelegramMessage(msg.chat.id, `⛔ Bạn không có quyền Manage trên <b>${resource}</b>. Không thể cấp quyền.`);
-              continue;
+              return;
             }
 
             // Cannot grant more than own permissions (except admin)
@@ -568,7 +574,7 @@ async function pollLoop(): Promise<void> {
               for (const c of access) {
                 if (c === "M") {
                   await sendTelegramMessage(msg.chat.id, `⛔ Chỉ Admin mới được cấp quyền Manage (M).`);
-                  continue;
+                  return;
                 }
               }
             }
@@ -585,7 +591,7 @@ async function pollLoop(): Promise<void> {
             await sendTelegramMessage(msg.chat.id, `✅ Đã cấp quyền <b>${access}</b> trên <b>${resource}</b> cho user <b>${targetId}</b>`);
             // Notify the user
             try { await sendTelegramMessage(targetId, `🔓 Bạn đã được cấp quyền <b>${access}</b> trên <b>${resource}</b>`); } catch {}
-            continue;
+            return;
           }
 
           // /deny <requestId>
@@ -593,7 +599,7 @@ async function pollLoop(): Promise<void> {
           if (denyMatch) {
             await rpr(denyMatch[1], "rejected");
             await sendTelegramMessage(msg.chat.id, `❌ Đã từ chối yêu cầu quyền.`);
-            continue;
+            return;
           }
 
           // /revoke <userId_or_name> <resource>
@@ -610,7 +616,7 @@ async function pollLoop(): Promise<void> {
             }
             await rvk(tenantId, targetId, resource);
             await sendTelegramMessage(msg.chat.id, `🔒 Đã thu hồi quyền trên <b>${resource}</b> của user <b>${targetId}</b>`);
-            continue;
+            return;
           }
 
           // /permissions — xem pending permission requests
@@ -624,7 +630,7 @@ async function pollLoop(): Promise<void> {
               ).join("\n\n");
               await sendTelegramMessage(msg.chat.id, `🔐 <b>Yêu cầu quyền (${reqs.length}):</b>\n\n${list}`);
             }
-            continue;
+            return;
           }
         }
 
@@ -634,10 +640,10 @@ async function pollLoop(): Promise<void> {
           handleFileUpload(msg, fileObj, userId, userName, tenantId).catch(
             (e: any) => console.error(`[Bot] File upload error: ${e.message}`)
           );
-          continue;
+          return;
         }
 
-        if (!msg.text) continue;
+        if (!msg.text) return;
 
         const job: QueueJob = {
           id: newId(),
@@ -655,12 +661,6 @@ async function pollLoop(): Promise<void> {
 
         console.error(`[Bot] ${userName}(${userId})[${userRole}]: ${job.text.substring(0, 60)}`);
         _queue.enqueue(job);
-      }
-    } catch (e: any) {
-      if (!e.message?.includes("timeout")) {
-        console.error("[Bot] Poll error:", e.message);
-      }
-    }
   }
 }
 
@@ -700,9 +700,10 @@ async function handleFileUpload(
   await sendTelegramMessage(chatId, `📤 Đang upload <b>${fileName}</b>...`);
 
   try {
-    // Get file URL from Telegram
-    const token = getConfig().TELEGRAM_BOT_TOKEN!;
-    const fileInfo = await callTelegram("getFile", { file_id: fileId });
+    // Get file URL from Telegram — find token for this tenant
+    const bot = _bots.get(tenantId);
+    const token = bot?.token ?? getConfig().TELEGRAM_BOT_TOKEN!;
+    const fileInfo = await callTelegramWithToken(token, "getFile", { file_id: fileId });
     const fileUrl = `https://api.telegram.org/file/bot${token}/${fileInfo.file_path}`;
 
     // Download from Telegram → upload to S3
@@ -752,40 +753,166 @@ async function handleFileUpload(
 
 // ── Start/Stop ───────────────────────────────────────────────
 
+/**
+ * Start multi-bot polling — reads bots from DB + .env fallback.
+ */
 export async function startTelegramBot(): Promise<void> {
   const config = getConfig();
-  if (!config.TELEGRAM_BOT_TOKEN || !config.TELEGRAM_DEFAULT_TENANT_ID) {
-    console.error("[TelegramBot] Missing token or tenant ID, skipping");
-    return;
-  }
+  const db = getDb();
+  const { tenants: tenantsTable, superAdmins } = await import("../db/schema.js");
 
-  // Retry connection up to 5 times
-  let me: any;
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    try {
-      me = await callTelegram("getMe", {});
-      console.error(`[TelegramBot] @${me.username} (${me.first_name}) — ready`);
-      break;
-    } catch (e: any) {
-      console.error(`[TelegramBot] Connect attempt ${attempt}/5 failed: ${e.message}`);
-      if (attempt === 5) {
-        console.error("[TelegramBot] Giving up, will retry via poll loop");
-        me = { username: "unknown", first_name: "Bot" };
-      }
-      await new Promise((r) => setTimeout(r, 2000 * attempt));
-    }
-  }
-
-  // Create queue with concurrency
+  // Create queue (shared across all bots)
   _queue = new MessageQueue(handleJob, {
     concurrency: 5,
     maxQueueSize: 100,
     jobTimeoutMs: 60000,
   });
   _queue.start();
-
   _running = true;
-  pollLoop().catch((e) => console.error("[TelegramBot] Fatal:", e));
+
+  // ── Load bots from DB ──
+  const dbTenants = await db.select().from(tenantsTable)
+    .where(eq(tenantsTable.botStatus, "active"));
+
+  for (const t of dbTenants) {
+    if (!t.botToken) continue;
+    try {
+      const me = await callTelegramWithToken(t.botToken, "getMe", {});
+      const bot: BotInstance = {
+        tenantId: t.id,
+        tenantName: t.name,
+        token: t.botToken,
+        username: me.username,
+        offset: 0,
+      };
+      _bots.set(t.id, bot);
+
+      // Update bot_username in DB
+      await db.update(tenantsTable).set({ botUsername: `@${me.username}` }).where(eq(tenantsTable.id, t.id));
+      console.error(`[TelegramBot] @${me.username} (${t.name}) — ready`);
+    } catch (e: any) {
+      console.error(`[TelegramBot] ${t.name}: connect failed — ${e.message}`);
+    }
+  }
+
+  // ── Fallback: .env bot (backward compatible) ──
+  if (_bots.size === 0 && config.TELEGRAM_BOT_TOKEN && config.TELEGRAM_DEFAULT_TENANT_ID) {
+    try {
+      const me = await callTelegramWithToken(config.TELEGRAM_BOT_TOKEN, "getMe", {});
+      const tenant = await getTenant(config.TELEGRAM_DEFAULT_TENANT_ID);
+      const bot: BotInstance = {
+        tenantId: config.TELEGRAM_DEFAULT_TENANT_ID,
+        tenantName: tenant?.name ?? "OpenClaw",
+        token: config.TELEGRAM_BOT_TOKEN,
+        username: me.username,
+        offset: 0,
+      };
+      _bots.set(bot.tenantId, bot);
+
+      // Save token to DB for future
+      await db.update(tenantsTable).set({
+        botToken: config.TELEGRAM_BOT_TOKEN,
+        botUsername: `@${me.username}`,
+        botStatus: "active",
+      }).where(eq(tenantsTable.id, config.TELEGRAM_DEFAULT_TENANT_ID));
+
+      console.error(`[TelegramBot] @${me.username} (${bot.tenantName}) — ready (from .env)`);
+    } catch (e: any) {
+      console.error(`[TelegramBot] .env bot connect failed: ${e.message}`);
+    }
+  }
+
+  if (_bots.size === 0) {
+    console.error("[TelegramBot] No bots configured");
+    return;
+  }
+
+  // ── Start polling for all bots ──
+  for (const bot of _bots.values()) {
+    pollBotLoop(bot).catch((e) => console.error(`[TelegramBot] ${bot.tenantName} fatal:`, e));
+  }
+}
+
+/**
+ * Poll loop for a single bot.
+ */
+async function pollBotLoop(bot: BotInstance): Promise<void> {
+  while (_running) {
+    try {
+      const updates = await callTelegramWithToken(bot.token, "getUpdates", {
+        offset: bot.offset, timeout: 30, allowed_updates: ["message"],
+      });
+
+      for (const update of updates ?? []) {
+        bot.offset = update.update_id + 1;
+        const msg = update.message;
+        if (!msg) continue;
+
+        const userId = String(msg.from.id);
+        const userName = msg.from.first_name ?? msg.from.username ?? "User";
+        const { role: userRole } = await getUserInfo(userId, bot.tenantId);
+
+        // Process message with this bot's tenantId
+        await processUpdate(msg, userId, userName, userRole, bot.tenantId, bot.token);
+      }
+    } catch (e: any) {
+      if (!e.message?.includes("timeout")) {
+        console.error(`[Bot:${bot.tenantName}] Poll error: ${e.message}`);
+      }
+    }
+  }
+}
+
+/**
+ * Add a new bot at runtime (Super Admin creates bot via chat).
+ */
+export async function addBot(tenantId: string, token: string): Promise<string> {
+  const me = await callTelegramWithToken(token, "getMe", {});
+  const tenant = await getTenant(tenantId);
+  const bot: BotInstance = {
+    tenantId,
+    tenantName: tenant?.name ?? "Bot",
+    token,
+    username: me.username,
+    offset: 0,
+  };
+  _bots.set(tenantId, bot);
+
+  // Save to DB
+  const db = getDb();
+  const { tenants: tenantsTable } = await import("../db/schema.js");
+  await db.update(tenantsTable).set({
+    botToken: token,
+    botUsername: `@${me.username}`,
+    botStatus: "active",
+  }).where(eq(tenantsTable.id, tenantId));
+
+  // Start polling
+  pollBotLoop(bot).catch((e) => console.error(`[Bot:${bot.tenantName}] Fatal:`, e));
+  console.error(`[TelegramBot] @${me.username} (${bot.tenantName}) — added + started`);
+  return me.username;
+}
+
+/**
+ * Stop a bot at runtime.
+ */
+export async function removeBot(tenantId: string): Promise<void> {
+  _bots.delete(tenantId);
+  const db = getDb();
+  const { tenants: tenantsTable } = await import("../db/schema.js");
+  await db.update(tenantsTable).set({ botStatus: "stopped" }).where(eq(tenantsTable.id, tenantId));
+  console.error(`[TelegramBot] Bot for tenant ${tenantId} stopped`);
+}
+
+/**
+ * List running bots.
+ */
+export function listBots(): { tenantId: string; tenantName: string; username: string }[] {
+  return Array.from(_bots.values()).map(b => ({
+    tenantId: b.tenantId,
+    tenantName: b.tenantName,
+    username: b.username,
+  }));
 }
 
 export function stopTelegramBot(): void {
@@ -793,9 +920,6 @@ export function stopTelegramBot(): void {
   _queue?.stop();
 }
 
-/**
- * Get queue metrics (exposed for monitoring dashboard).
- */
 export function getQueueMetrics() {
   return _queue?.getMetrics() ?? null;
 }
