@@ -283,16 +283,33 @@ async function handleJob(job: QueueJob): Promise<void> {
 
   await appendMessage(session.id, { role: "user", content: job.text, at: Date.now() });
 
+  // ── Auto-summarize if history too long ──
+  try {
+    const { autoSummarize, buildOptimizedHistory } = await import("../modules/conversations/conversation.service.js");
+    await autoSummarize(session.id, async (text: string) => {
+      // Use fast API to summarize (cheap + fast)
+      const { callFastAPI } = await import("../modules/agents/agent-runner.js");
+      return await callFastAPI(
+        "Tóm tắt ngắn gọn hội thoại sau (giữ lại tất cả data quan trọng: tên, số, ID, trạng thái):\n\n" + text,
+        "Bạn là bot tóm tắt. Trả về 1 paragraph ngắn gọn.",
+        [],
+      );
+    });
+  } catch {}
+
+  // ── Build optimized history (summary + recent + form state) ──
+  const { buildOptimizedHistory } = await import("../modules/conversations/conversation.service.js");
+  // Re-fetch session after potential summarization
+  const freshSession = await getOrCreateSession({
+    tenantId: job.tenantId, channel: "telegram",
+    channelUserId: job.userId, userName: job.userName, userRole: job.userRole,
+  });
+  const { history } = buildOptimizedHistory(freshSession);
+
   // ── Send progress message immediately ──
   const progressMsgId = await sendTelegramMessage(job.chatId, "⏳ Đang xử lý...");
 
-  const state = session.state ?? { messages: [] };
-  const history = (state.messages ?? []).map((m: any) => ({
-    role: m.role as string,
-    content: m.content as string,
-  }));
-
-  // Progress callback — edits the progress message as tools execute
+  // Progress callback
   const onProgress = async (stage: string) => {
     if (progressMsgId) {
       await editTelegramMessage(job.chatId, progressMsgId, stage);
@@ -306,9 +323,10 @@ async function handleJob(job: QueueJob): Promise<void> {
     userRole: job.userRole,
     tenantId: job.tenantId,
     tenantName: tenant?.name ?? "OpenClaw",
-    conversationHistory: history.slice(-15),
+    conversationHistory: history,
     aiConfig: (tenant?.aiConfig ?? {}) as Record<string, unknown>,
     onProgress,
+    sessionId: session.id,
   });
 
   // ── Edit progress message → final response ──

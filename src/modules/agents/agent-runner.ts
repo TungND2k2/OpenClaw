@@ -315,33 +315,22 @@ BẮT BUỘC TUÂN THỦ:
     }
   }
 
-  /**
-   * Build a flat prompt string from history + current message.
-   * Used for Claude SDK which takes a single prompt string.
-   */
   private buildPromptWithHistory(
     userMessage: string,
     history: { role: string; content: string }[],
   ): string {
     if (history.length === 0) return userMessage;
-
     const historyText = history
       .map(h => `${h.role === "user" ? "User" : "Assistant"}: ${h.content}`)
       .join("\n\n");
-
     return `${historyText}\n\nUser: ${userMessage}`;
   }
 
-  /**
-   * Parse tool calls from LLM response text.
-   * Format: ```tool_calls\n[{"tool":"name","args":{...}}]\n```
-   */
   private parseToolCalls(text: string): { tool: string; args: Record<string, unknown> }[] {
     const patterns = [
       /```tool_calls\s*\n?([\s\S]*?)```/,
       /```json\s*\n?(\[[\s\S]*?\])\s*```/,
     ];
-
     for (const pattern of patterns) {
       const match = text.match(pattern);
       if (match) {
@@ -358,10 +347,32 @@ BẮT BUỘC TUÂN THỦ:
     return [];
   }
 
-  /**
-   * Update the system prompt (e.g., inject knowledge context).
-   */
   updateSystemPrompt(prompt: string): void {
     this.systemPrompt = prompt;
   }
+}
+
+// ── Standalone fast API call (for summarization etc.) ────────
+
+export async function callFastAPI(
+  userMessage: string,
+  systemPrompt: string,
+  history: { role: string; content: string }[],
+): Promise<string> {
+  const { getConfig } = await import("../../config.js");
+  const config = getConfig();
+  const messages = [
+    { role: "system", content: systemPrompt },
+    ...history.map(h => ({ role: h.role, content: h.content })),
+    { role: "user", content: userMessage },
+  ];
+  const resp = await fetch(`${config.WORKER_API_BASE}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.WORKER_API_KEY}` },
+    body: JSON.stringify({ model: config.WORKER_MODEL, messages, max_tokens: 512, temperature: 0.2 }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!resp.ok) throw new Error(`API ${resp.status}`);
+  const data = (await resp.json()) as any;
+  return data.choices?.[0]?.message?.content ?? "";
 }

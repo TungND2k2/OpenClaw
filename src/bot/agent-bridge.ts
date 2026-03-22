@@ -27,9 +27,13 @@ import {
   workflowTemplates, formTemplates, businessRules,
   tenantUsers,
 } from "../db/schema.js";
-import { createCollection, listCollections, findCollection, insertRow, listRows, updateRow, deleteRow, searchAllRows, countRows } from "../modules/collections/collection.service.js";
+import { createCollection, listCollections, findCollection, insertRow, listRows, updateRow, deleteRow, searchAllRows } from "../modules/collections/collection.service.js";
+import { startFormSession, updateFormField, getFormState, cancelFormSession } from "../modules/conversations/conversation.service.js";
 import { newId } from "../utils/id.js";
 import { nowMs } from "../utils/clock.js";
+
+// Session ID passed per-request for form tools
+let _currentSessionId: string | null = null;
 
 // ── Tool Registry ─────────────────────────────────────────────
 
@@ -414,6 +418,53 @@ export async function executeTool(tool: string, args: Record<string, unknown>, t
       return rows;
     }
 
+    // ── Form State Tools ──────────────────────────────────────
+
+    case "start_form": {
+      if (!_currentSessionId) return { error: "No session" };
+      const { formTemplates: ft } = await import("../db/schema.js");
+      // Find form template by name or ID
+      let formId = args.form_id as string;
+      let formName = args.form_name as string;
+      if (!formId && formName) {
+        const forms = await db.select().from(ft).where(eq(ft.tenantId, tenantId));
+        const match = forms.find(f => f.name.toLowerCase().includes(formName.toLowerCase()));
+        if (match) { formId = match.id; formName = match.name; }
+      }
+      if (!formId) return { error: `Form "${args.form_name}" không tìm thấy` };
+      const form = (await db.select().from(ft).where(eq(ft.id, formId)).limit(1))[0];
+      if (!form) return { error: "Form not found" };
+      const schema = typeof form.schema === "string" ? JSON.parse(form.schema) : form.schema;
+      const fields = (schema.fields ?? []).map((f: any) => ({ label: f.label, required: f.required }));
+      const state = await startFormSession(_currentSessionId, form.name, formId, fields);
+      return { started: true, formName: form.name, totalSteps: state.totalSteps, firstField: state.pendingFields[0] };
+    }
+
+    case "update_form_field": {
+      if (!_currentSessionId) return { error: "No session" };
+      const state = await updateFormField(_currentSessionId, args.field_name as string, args.value);
+      const next = state.pendingFields[0] ?? null;
+      return {
+        saved: true, field: args.field_name, value: args.value,
+        step: state.currentStep, total: state.totalSteps,
+        nextField: next, completed: state.status === "completed",
+        data: state.data,
+      };
+    }
+
+    case "get_form_state": {
+      if (!_currentSessionId) return { error: "No session" };
+      const state = await getFormState(_currentSessionId);
+      if (!state) return { noForm: true };
+      return state;
+    }
+
+    case "cancel_form": {
+      if (!_currentSessionId) return { error: "No session" };
+      await cancelFormSession(_currentSessionId);
+      return { cancelled: true };
+    }
+
     default: return { error: `Unknown tool: ${tool}` };
   }
 }
@@ -435,7 +486,10 @@ export async function processWithCommander(input: {
   conversationHistory: { role: string; content: string }[];
   aiConfig: Record<string, unknown>;
   onProgress?: (stage: string) => Promise<void>;
+  sessionId?: string;
 }): Promise<CommanderResponse> {
+  // Set session for form tools
+  _currentSessionId = input.sessionId ?? null;
   const _files: CommanderResponse["files"] = [];
   const startTime = Date.now();
 
@@ -494,7 +548,26 @@ export async function processWithCommander(input: {
     ? `\n\nFILES ĐÃ UPLOAD:\n${uploadedFiles.map((f: any) => `• ${f.fileName} (ID: ${f.id})`).join("\n")}\nKhi user hỏi về file/cẩm nang/tài liệu → gọi read_file_content(file_id) để đọc.`
     : "";
 
-  const systemPrompt = buildCommanderPrompt(input.tenantName, input.userName, input.userRole, input.aiConfig) + knowledgeContext + fileContext;
+  // ── Step 3b: Form state context ───────────────────────────
+  let formContext = "";
+  if (input.sessionId) {
+    const formState = await getFormState(input.sessionId);
+    if (formState && formState.status === "in_progress") {
+      const filled = Object.entries(formState.data)
+        .filter(([, v]) => v !== null && v !== undefined && v !== "")
+        .map(([k, v], i) => `  ${i + 1}. ${k}: ${v} ✅`)
+        .join("\n");
+      const pending = formState.pendingFields
+        .map((f, i) => `  ${Object.keys(formState.data).length + i + 1}. ${f}${i === 0 ? " ← ĐANG CHỜ" : ""}`)
+        .join("\n");
+      formContext = `\n\nFORM ĐANG NHẬP: "${formState.formName}" (bước ${formState.currentStep}/${formState.totalSteps})
+ĐÃ ĐIỀN:\n${filled || "  (chưa có)"}
+ĐANG CHỜ:\n${pending || "  (hoàn thành)"}
+→ Khi user trả lời → gọi update_form_field(field_name, value) để lưu. KHÔNG hỏi lại field đã điền.`;
+    }
+  }
+
+  const systemPrompt = buildCommanderPrompt(input.tenantName, input.userName, input.userRole, input.aiConfig) + knowledgeContext + fileContext + formContext;
 
   // ── Step 4: Commander THINKS ─────────────────────────────
   await input.onProgress?.("🤖 Commander đang suy nghĩ...");
