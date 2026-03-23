@@ -51,30 +51,29 @@ Persona lưu DB — bot tự nhớ vai trò:
 ```mermaid
 graph TD
     U[👤 User nhắn tin] --> Q[📬 Message Queue<br/>5 concurrent]
-    Q --> C[🧠 Commander<br/>Hiểu ý định, phân rã task]
+    Q --> C[🧠 Commander<br/>Hiểu ý định, route workers]
 
-    C -->|subtask| S1[📋 Supervisor]
-    S1 -->|giao việc| W1[⚙️ Worker 1]
-    S1 -->|giao việc| W2[⚙️ Worker 2]
+    C -->|giao việc| WP[⚙️ Worker Pool<br/>Tạo qua config/chat]
+    WP -->|worker A| W1[⚙️ Worker]
+    WP -->|worker B| W2[⚙️ Worker]
+    WP -->|worker N| WN[⚙️ ...]
 
-    W1 & W2 -->|gọi tools| T[🔧 Tool Registry<br/>30 tools]
+    W1 & W2 & WN -->|gọi tools| T[🔧 Tool Registry<br/>30 tools]
     T --> DB[(🗄️ PostgreSQL)]
     T --> S3[📦 S3 Storage]
     T --> KB[📚 Knowledge Base]
 
-    KB -.->|kiến thức đã học<br/>+ rejected context| C
-    W1 & W2 -.->|kết quả| S1
-    S1 -.->|tổng hợp| C
-    C -.->|response| U
+    KB -.->|kiến thức đã học| C
+    W1 & W2 & WN -.->|gửi ngay Telegram| U
 
     C -.->|sau response| FB[🔄 Feedback Detection<br/>tự phân tích ngầm]
-    FB -.->|positive| KB
-    FB -.->|negative| KB
+    FB -.->|positive/negative| KB
 
     style C fill:#4A90D9,color:#fff
-    style S1 fill:#7B68EE,color:#fff
+    style WP fill:#34495E,color:#fff
     style W1 fill:#2ECC71,color:#fff
     style W2 fill:#2ECC71,color:#fff
+    style WN fill:#2ECC71,color:#fff
     style KB fill:#F39C12,color:#fff
     style FB fill:#9B59B6,color:#fff
 ```
@@ -93,9 +92,8 @@ Feedback Loop — bot tự cải thiện:
 
 | Agent | Vai trò |
 |-------|---------|
-| **🧠 Commander** | Não chính — nhận message, hiểu ý định, phân rã thành subtasks, tổng hợp kết quả trả user |
-| **📋 Supervisor** | Quản lý nhóm — nhận subtasks từ Commander, assign cho Workers phù hợp, review kết quả |
-| **⚙️ Worker** | Thực thi — nhận 1 task cụ thể, gọi tools (đọc file, query DB, tạo đơn...), trả kết quả |
+| **🧠 Commander** | Não chính — nhận message, hiểu ý định, route đến workers phù hợp, tổng hợp kết quả |
+| **⚙️ Worker** | Thực thi — nhận task, gọi tools (đọc file, query DB, tạo đơn...), trả kết quả. Mỗi worker có persona riêng (PM, Tech, QA...) |
 
 ```
 Ví dụ: User hỏi "đọc tài liệu, tóm tắt, rồi tạo quy trình mới"
@@ -110,40 +108,28 @@ Commander: tổng hợp kết quả → trả user
 
 > Tạo agent mới qua chat — không cần code. Agent Templates lưu DB.
 
-#### Multi-Persona — nhiều nhân cách trong 1 bot
-
-```mermaid
-graph TD
-    U[👤 User hỏi câu phức tạp] --> C[🧠 Commander<br/>Route đến personas]
-    C -->|round 1| P1[🧑‍💼 PM Zero<br/>Review tiến độ]
-    P1 -.->|gửi ngay lên Telegram| TG[📱 Telegram]
-    C -->|round 2| P2[🔧 Tech Zero<br/>Đánh giá kỹ thuật]
-    P2 -.->|gửi ngay lên Telegram| TG
-    C -->|round 3| P1b[🧑‍💼 PM Zero<br/>Kết luận]
-    P1b -.->|gửi ngay lên Telegram| TG
-
-    style C fill:#4A90D9,color:#fff
-    style P1 fill:#7B68EE,color:#fff
-    style P2 fill:#2ECC71,color:#fff
-    style P1b fill:#7B68EE,color:#fff
-```
+#### Workers có thể trao đổi với nhau (Multi-Persona)
 
 ```
-1 bot, nhiều persona — mỗi persona trả lời với chủ ngữ riêng:
+Mỗi Worker có persona riêng (emoji + tên + chuyên môn):
+  🧑‍💼 PM Zero (supervisor) — quản lý tiến độ, deadline
+  🔧 Tech Zero (worker) — kỹ thuật, DevOps, code review
+  🔍 QA Zero (worker) — testing, bug tracking
+
+Khi câu hỏi cần nhiều góc nhìn:
+  Commander → route đến 2-3 workers → mỗi worker trả lời lần lượt
+  → Gửi ngay lên Telegram khi xong, không đợi tất cả
+  → Workers thấy response của nhau → trao đổi tự nhiên
 
   User: "review tiến độ dự án xCB"
 
   🧑‍💼 PM Zero: xCB 80% done, còn test AI Agents.
               @Tech Zero cần bao lâu?
 
-  🔧 Tech Zero: Docker xong, cần 2 ngày test 5 agents.
+  🔧 Tech Zero: Docker xong, cần 2 ngày test.
                @PM Zero update deadline thứ 4.
 
-  🧑‍💼 PM Zero: Đã update deadline xCB → 26/03/2026 ✅
-
-Mỗi message gửi ngay khi persona trả lời — không đợi tất cả.
-Personas tự trao đổi, user thấy real-time trên Telegram.
-Tạo persona qua chat: "tạo persona QA Zero chuyên testing"
+  🧑‍💼 PM Zero: Đã update deadline → 26/03 ✅
 ```
 
 ---
