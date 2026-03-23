@@ -50,10 +50,14 @@ Persona lưu DB — bot tự nhớ vai trò:
 
 ```mermaid
 graph TD
-    U[👤 User nhắn tin] --> Q[📬 Message Queue<br/>5 concurrent]
+    U[👤 User nhắn tin] --> FB{🔄 Feedback Detection<br/>User hài lòng?}
+    FB -->|ngầm phân tích| Q[📬 Message Queue<br/>5 concurrent]
+    FB -.->|negative| KB_UPDATE[📉 Giảm use_count<br/>Đánh dấu REJECTED]
+    FB -.->|positive| KB_UP[📈 Tăng use_count<br/>Đánh dấu ACCEPTED]
+
     Q --> C[🧠 Commander<br/>Hiểu ý định, phân rã task]
 
-    C -->|subtask 1| S1[📋 Supervisor]
+    C -->|subtask| S1[📋 Supervisor]
     S1 -->|giao việc| W1[⚙️ Worker 1]
     S1 -->|giao việc| W2[⚙️ Worker 2]
 
@@ -62,16 +66,31 @@ graph TD
     T --> S3[📦 S3 Storage]
     T --> KB[📚 Knowledge Base]
 
-    KB -.->|kiến thức đã học| C
+    KB -.->|kiến thức đã học<br/>+ rejected context| C
+    KB_UPDATE -.-> KB
+    KB_UP -.-> KB
     W1 & W2 -.->|kết quả| S1
     S1 -.->|tổng hợp| C
-    C -.->|response| U
+    C -.->|response + lưu lastTools| U
 
     style C fill:#4A90D9,color:#fff
     style S1 fill:#7B68EE,color:#fff
     style W1 fill:#2ECC71,color:#fff
     style W2 fill:#2ECC71,color:#fff
     style KB fill:#F39C12,color:#fff
+    style FB fill:#9B59B6,color:#fff
+    style KB_UPDATE fill:#E74C3C,color:#fff
+    style KB_UP fill:#2ECC71,color:#fff
+```
+
+```
+Feedback Loop — bot tự cải thiện:
+  Lần 1: Bot trả lời → user "sai rồi, làm lại"
+    → Detect: negative → rule bị đánh dấu REJECTED
+  Lần 2: Cùng câu hỏi → Commander đọc "cách cũ bị reject"
+    → Thử approach khác → user "ok đúng rồi"
+    → Detect: positive → rule mới được ACCEPTED
+  Lần 3+: Tự động dùng approach đã accepted
 ```
 
 #### Agent System — ai làm gì?
