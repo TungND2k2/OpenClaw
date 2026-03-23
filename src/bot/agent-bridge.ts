@@ -1040,15 +1040,15 @@ Chưa có: ${missing.join(", ")}
   });
 
   try {
-    const result = await runner.think(input.userMessage, input.conversationHistory);
-
-    // ── Step 4b: Multi-persona conversation (if personas exist) ──
+    // ── Step 4a: Check personas FIRST ──
     let personaMessages: PersonaMsg[] | undefined;
     const personas = await getPersonas(input.tenantId);
-
     console.error(`[Pipeline] Personas found: ${personas.length} (${personas.map(p => p.name).join(", ")})`);
 
-    if (personas.length >= 2 && input.userMessage.length > 20) {
+    let result: { text: string; toolCalls: { tool: string }[] };
+
+    if (personas.length >= 2 && input.userMessage.length > 15) {
+      // Route to personas — skip Commander
       try {
         const { getConfig: gc3 } = await import("../config.js");
         const cfg3 = gc3();
@@ -1062,9 +1062,10 @@ Chưa có: ${missing.join(", ")}
           workerModel: cfg3.WORKER_MODEL!,
         });
 
+        console.error(`[Pipeline] Route to: ${participants.join(" → ")}`);
+
         if (participants.length >= 2) {
-          await input.onProgress?.("💬 Các personas đang trao đổi...");
-          console.error(`[Pipeline] Persona conversation: ${participants.join(" → ")}`);
+          await input.onProgress?.("💬 Các agents đang trao đổi...");
 
           const pMessages = await runPersonaConversation({
             userMessage: input.userMessage,
@@ -1072,6 +1073,7 @@ Chưa có: ${missing.join(", ")}
             participantNames: participants,
             conversationHistory: input.conversationHistory,
             executeTool: async (tool, args) => {
+              await input.onProgress?.(`🔄 [${tool}]...`);
               return await executeTool(tool, args, input.tenantId);
             },
             engine: effectiveEngine,
@@ -1084,21 +1086,27 @@ Chưa có: ${missing.join(", ")}
             } : undefined,
           });
 
-          if (pMessages.length > 0) {
-            personaMessages = pMessages.map(m => ({
-              emoji: m.persona.emoji,
-              name: m.persona.name,
-              content: m.content,
-            }));
-            // Override text with summary
-            result.text = pMessages
-              .map(m => `${m.persona.emoji} ${m.persona.name}: ${m.content}`)
-              .join("\n\n");
-          }
+          personaMessages = pMessages.map(m => ({
+            emoji: m.persona.emoji,
+            name: m.persona.name,
+            content: m.content,
+          }));
+
+          result = {
+            text: pMessages.map(m => `${m.persona.emoji} ${m.persona.name}: ${m.content}`).join("\n\n"),
+            toolCalls: [],
+          };
+        } else {
+          // Only 1 participant — fall back to Commander
+          result = await runner.think(input.userMessage, input.conversationHistory);
         }
       } catch (pErr: any) {
-        console.error(`[Pipeline] Persona conversation skipped: ${pErr.message}`);
+        console.error(`[Pipeline] Persona failed, fallback Commander: ${pErr.message}`);
+        result = await runner.think(input.userMessage, input.conversationHistory);
       }
+    } else {
+      // No personas or short message — Commander handles directly
+      result = await runner.think(input.userMessage, input.conversationHistory);
     }
 
     await input.onProgress?.("✍️ Đang tổng hợp câu trả lời...");
