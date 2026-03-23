@@ -14,6 +14,7 @@ import { getDb } from "../db/connection.js";
 import { eq, and } from "drizzle-orm";
 import { notebookWrite } from "../modules/notebooks/notebook.service.js";
 import { storeKnowledge, retrieveKnowledge, mergeOrCreateRule, detectFeedback, applyFeedback } from "../modules/knowledge/knowledge.service.js";
+import { getPersonas, routeToPersonas, runPersonaConversation } from "../modules/agents/persona-conversation.js";
 import { getDashboard } from "../modules/monitoring/monitor.service.js";
 import { startWorkflow } from "../modules/workflows/workflow-engine.service.js";
 import { getFile, listFiles, readFileContent } from "../modules/storage/s3.service.js";
@@ -597,15 +598,134 @@ export async function executeTool(tool: string, args: Record<string, unknown>, t
       return { cancelled: true };
     }
 
+    // ── Bot Management Tools (Super Admin only) ────────────
+
+    case "create_bot": {
+      if (!_currentUser || _currentUser.role !== "admin") return { error: "Chỉ admin mới tạo bot" };
+      const botName = args.name as string;
+      const botToken = args.token as string;
+      const botPersona = (args.persona as string) ?? "trợ lý AI";
+      if (!botName || !botToken) return { error: "Cần name và token" };
+
+      // Check super admin
+      const { superAdmins } = await import("../db/schema.js");
+      const isSA = (await db.select().from(superAdmins)
+        .where(and(eq(superAdmins.channel, "telegram"), eq(superAdmins.channelUserId, _currentUser.id)))
+        .limit(1))[0];
+      if (!isSA) return { error: "Chỉ Super Admin mới tạo bot" };
+
+      const newTenantId = newId();
+      const { tenants: tenantTable, tenantUsers: tuTable } = await import("../db/schema.js");
+
+      await db.insert(tenantTable).values({
+        id: newTenantId,
+        name: `${botName} Corp`,
+        botToken: botToken,
+        botStatus: "active",
+        config: "{}",
+        aiConfig: JSON.stringify({
+          bot_name: botName,
+          bot_intro: botPersona,
+          language: "vi",
+          tone: "professional",
+          rules: ["KHÔNG tự bịa data", "Ngắn gọn, thực tế",
+            "Khi user thay đổi vai trò/persona → gọi update_ai_config để lưu DB"],
+          tools: {
+            business: [
+              { name: "list_files", desc: "Xem files" },
+              { name: "read_file_content", desc: "Đọc file", args: "file_id" },
+              { name: "save_knowledge", desc: "Lưu knowledge" },
+              { name: "search_knowledge", desc: "Tìm knowledge" },
+              { name: "list_users", desc: "Xem users" },
+              { name: "set_user_role", desc: "Đổi role", args: "channel_user_id, role" },
+              { name: "get_dashboard", desc: "Dashboard" },
+              { name: "create_collection", desc: "Tạo bảng", args: "name, fields" },
+              { name: "list_collections", desc: "Xem bảng" },
+              { name: "add_row", desc: "Thêm dòng", args: "collection, data" },
+              { name: "list_rows", desc: "Xem dữ liệu", args: "collection" },
+              { name: "search_all", desc: "Tìm kiếm" },
+              { name: "update_ai_config", desc: "Cập nhật config bot" },
+            ],
+          },
+          role_permissions: {
+            admin: "ADMIN — toàn quyền",
+            manager: "MANAGER — quản lý",
+            user: "USER — sử dụng",
+          },
+        }),
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+        createdByUserId: _currentUser.id,
+        createdByName: _currentUser.name,
+      });
+
+      // Add creator as admin of new bot
+      await db.insert(tuTable).values({
+        id: newId(),
+        tenantId: newTenantId,
+        channel: "telegram",
+        channelUserId: _currentUser.id,
+        displayName: _currentUser.name,
+        role: "admin",
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Start polling for new bot
+      try {
+        const { addBot } = await import("./telegram.bot.js");
+        await addBot(newTenantId, botToken);
+      } catch (e: any) {
+        return { created: true, tenantId: newTenantId, botName, warning: `Bot created but polling failed: ${e.message}` };
+      }
+
+      return { created: true, tenantId: newTenantId, botName, status: "polling_started" };
+    }
+
+    case "list_bots": {
+      const { tenants: tt } = await import("../db/schema.js");
+      const bots = await db.select({
+        id: tt.id, name: tt.name, botUsername: tt.botUsername,
+        botStatus: tt.botStatus, createdByName: tt.createdByName,
+      }).from(tt).where(eq(tt.status, "active"));
+      return bots;
+    }
+
+    case "stop_bot": {
+      if (!_currentUser || _currentUser.role !== "admin") return { error: "Chỉ admin" };
+      const targetId = args.tenant_id as string;
+      if (!targetId) return { error: "Cần tenant_id" };
+
+      const { tenants: tt2 } = await import("../db/schema.js");
+      await db.update(tt2).set({ botStatus: "stopped", updatedAt: now })
+        .where(eq(tt2.id, targetId));
+
+      try {
+        const { removeBot } = await import("./telegram.bot.js");
+        removeBot(targetId);
+      } catch {}
+
+      return { stopped: true, tenantId: targetId };
+    }
+
     default: return { error: `Unknown tool: ${tool}` };
   }
 }
 
 // ── Commander Pipeline ──────────────────────────────────────
 
+export interface PersonaMsg {
+  emoji: string;
+  name: string;
+  content: string;
+}
+
 export interface CommanderResponse {
   text: string;
   files: { url: string; fileName: string; mimeType: string }[];
+  personaMessages?: PersonaMsg[];
 }
 
 export async function processWithCommander(input: {
@@ -618,6 +738,7 @@ export async function processWithCommander(input: {
   conversationHistory: { role: string; content: string }[];
   aiConfig: Record<string, unknown>;
   onProgress?: (stage: string) => Promise<void>;
+  onPersonaMessage?: (msg: PersonaMsg) => Promise<void>;
   sessionId?: string;
 }): Promise<CommanderResponse> {
   // Set per-request context for form + permission tools
@@ -777,6 +898,63 @@ export async function processWithCommander(input: {
   try {
     const result = await runner.think(input.userMessage, input.conversationHistory);
 
+    // ── Step 4b: Multi-persona conversation (if personas exist) ──
+    let personaMessages: PersonaMsg[] | undefined;
+    const personas = await getPersonas(input.tenantId);
+
+    if (personas.length >= 2 && input.userMessage.length > 20) {
+      try {
+        const { getConfig: gc3 } = await import("../config.js");
+        const cfg3 = gc3();
+
+        const participants = await routeToPersonas({
+          userMessage: input.userMessage,
+          availablePersonas: personas,
+          engine: effectiveEngine,
+          workerApiBase: cfg3.WORKER_API_BASE!,
+          workerApiKey: cfg3.WORKER_API_KEY!,
+          workerModel: cfg3.WORKER_MODEL!,
+        });
+
+        if (participants.length >= 2) {
+          await input.onProgress?.("💬 Các personas đang trao đổi...");
+          console.error(`[Pipeline] Persona conversation: ${participants.join(" → ")}`);
+
+          const pMessages = await runPersonaConversation({
+            userMessage: input.userMessage,
+            personas,
+            participantNames: participants,
+            conversationHistory: input.conversationHistory,
+            executeTool: async (tool, args) => {
+              return await executeTool(tool, args, input.tenantId);
+            },
+            engine: effectiveEngine,
+            onPersonaMessage: input.onPersonaMessage ? async (m) => {
+              await input.onPersonaMessage!({
+                emoji: m.persona.emoji,
+                name: m.persona.name,
+                content: m.content,
+              });
+            } : undefined,
+          });
+
+          if (pMessages.length > 0) {
+            personaMessages = pMessages.map(m => ({
+              emoji: m.persona.emoji,
+              name: m.persona.name,
+              content: m.content,
+            }));
+            // Override text with summary
+            result.text = pMessages
+              .map(m => `${m.persona.emoji} ${m.persona.name}: ${m.content}`)
+              .join("\n\n");
+          }
+        }
+      } catch (pErr: any) {
+        console.error(`[Pipeline] Persona conversation skipped: ${pErr.message}`);
+      }
+    }
+
     await input.onProgress?.("✍️ Đang tổng hợp câu trả lời...");
 
     // ── Step 5: Complete task + update performance ──────────
@@ -816,7 +994,7 @@ export async function processWithCommander(input: {
     const elapsed = Date.now() - startTime;
     console.error(`[Pipeline] ─── END (${elapsed}ms, ${result.toolCalls.length} tools) ────────────`);
 
-    return { text: result.text, files: _files };
+    return { text: result.text, files: _files, personaMessages };
   } catch (e: any) {
     // ── Error handling ──────────────────────────────────────
     if (task) {

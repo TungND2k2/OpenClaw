@@ -336,6 +336,18 @@ async function handleJob(job: QueueJob): Promise<void> {
     }
   };
 
+  // Persona streaming — send each persona message immediately when ready
+  let personaStreamed = false;
+  const onPersonaMessage = async (pm: { emoji: string; name: string; content: string }) => {
+    if (!personaStreamed && progressMsgId) {
+      // Delete progress message on first persona message
+      try { await callTelegramWithToken(tk, "deleteMessage", { chat_id: job.chatId, message_id: progressMsgId }); } catch {}
+      personaStreamed = true;
+    }
+    const formatted = markdownToTelegramHtml(`${pm.emoji} <b>${pm.name}:</b>\n${pm.content}`);
+    await sendTelegramMessage(job.chatId, formatted, tk);
+  };
+
   const response = await processWithCommander({
     userMessage: job.text,
     userName: job.userName,
@@ -346,20 +358,27 @@ async function handleJob(job: QueueJob): Promise<void> {
     conversationHistory: history,
     aiConfig: (tenant?.aiConfig ?? {}) as Record<string, unknown>,
     onProgress,
+    onPersonaMessage,
     sessionId: session.id,
   });
 
   // ── Edit progress message → final response ──
-  const formattedText = markdownToTelegramHtml(response.text);
   await appendMessage(session.id, { role: "assistant", content: response.text, at: Date.now() });
 
-  if (progressMsgId && formattedText.length <= 4000) {
-    await editTelegramMessage(job.chatId, progressMsgId, formattedText, tk);
+  // If personas already streamed, skip sending again
+  if (personaStreamed) {
+    // Already sent — do nothing
   } else {
-    if (progressMsgId) {
-      try { await callTelegramWithToken(tk, "deleteMessage", { chat_id: job.chatId, message_id: progressMsgId }); } catch {}
+    // Single response (normal flow)
+    const formattedText = markdownToTelegramHtml(response.text);
+    if (progressMsgId && formattedText.length <= 4000) {
+      await editTelegramMessage(job.chatId, progressMsgId, formattedText, tk);
+    } else {
+      if (progressMsgId) {
+        try { await callTelegramWithToken(tk, "deleteMessage", { chat_id: job.chatId, message_id: progressMsgId }); } catch {}
+      }
+      await sendTelegramMessage(job.chatId, formattedText, tk);
     }
-    await sendTelegramMessage(job.chatId, formattedText, tk);
   }
 
   // Send files from tool calls
@@ -780,7 +799,7 @@ export async function startTelegramBot(): Promise<void> {
   _queue = new MessageQueue(handleJob, {
     concurrency: 5,
     maxQueueSize: 100,
-    jobTimeoutMs: 60000,
+    jobTimeoutMs: 180000,
   });
   _queue.start();
   _running = true;

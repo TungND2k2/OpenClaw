@@ -110,6 +110,42 @@ Commander: tổng hợp kết quả → trả user
 
 > Tạo agent mới qua chat — không cần code. Agent Templates lưu DB.
 
+#### Multi-Persona — nhiều nhân cách trong 1 bot
+
+```mermaid
+graph TD
+    U[👤 User hỏi câu phức tạp] --> C[🧠 Commander<br/>Route đến personas]
+    C -->|round 1| P1[🧑‍💼 PM Zero<br/>Review tiến độ]
+    P1 -.->|gửi ngay lên Telegram| TG[📱 Telegram]
+    C -->|round 2| P2[🔧 Tech Zero<br/>Đánh giá kỹ thuật]
+    P2 -.->|gửi ngay lên Telegram| TG
+    C -->|round 3| P1b[🧑‍💼 PM Zero<br/>Kết luận]
+    P1b -.->|gửi ngay lên Telegram| TG
+
+    style C fill:#4A90D9,color:#fff
+    style P1 fill:#7B68EE,color:#fff
+    style P2 fill:#2ECC71,color:#fff
+    style P1b fill:#7B68EE,color:#fff
+```
+
+```
+1 bot, nhiều persona — mỗi persona trả lời với chủ ngữ riêng:
+
+  User: "review tiến độ dự án xCB"
+
+  🧑‍💼 PM Zero: xCB 80% done, còn test AI Agents.
+              @Tech Zero cần bao lâu?
+
+  🔧 Tech Zero: Docker xong, cần 2 ngày test 5 agents.
+               @PM Zero update deadline thứ 4.
+
+  🧑‍💼 PM Zero: Đã update deadline xCB → 26/03/2026 ✅
+
+Mỗi message gửi ngay khi persona trả lời — không đợi tất cả.
+Personas tự trao đổi, user thấy real-time trên Telegram.
+Tạo persona qua chat: "tạo persona QA Zero chuyên testing"
+```
+
 ---
 
 ### Sơ đồ 3 — Phân quyền & Role
