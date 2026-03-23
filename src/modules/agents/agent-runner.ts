@@ -203,7 +203,12 @@ export class AgentRunner {
     history: { role: string; content: string }[],
   ): Promise<string> {
     if (this.engine === "claude-cli") {
-      return this.callClaudeCLI(userMessage, history);
+      try {
+        return await this.callClaudeCLI(userMessage, history);
+      } catch (cliErr: any) {
+        console.error(`[Agent:${this.agent.name}] CLI failed, fallback to fast-api: ${cliErr.message.substring(0, 80)}`);
+        return this.callFastAPI(userMessage, history);
+      }
     }
     return this.callFastAPI(userMessage, history);
   }
