@@ -699,7 +699,7 @@ async function processUpdate(
         // ── Handle file uploads ──
         const fileObj = msg.document ?? msg.photo?.at(-1) ?? msg.video ?? msg.audio ?? msg.voice;
         if (fileObj && getConfig().S3_BUCKET) {
-          handleFileUpload(msg, fileObj, userId, userName, tenantId).catch(
+          handleFileUpload(msg, fileObj, userId, userName, tenantId, botToken).catch(
             (e: any) => console.error(`[Bot] File upload error: ${e.message}`)
           );
           return;
@@ -738,7 +738,8 @@ async function handleFileUpload(
   fileObj: any,
   userId: string,
   userName: string,
-  tenantId: string
+  tenantId: string,
+  botToken?: string,
 ): Promise<void> {
   const chatId = msg.chat.id;
   const isPhoto = !!msg.photo;
@@ -747,21 +748,23 @@ async function handleFileUpload(
   const fileName = fileObj.file_name ?? (isPhoto ? `photo_${Date.now()}.jpg` : `file_${Date.now()}`);
   const mimeType = fileObj.mime_type ?? (isPhoto ? "image/jpeg" : "application/octet-stream");
 
+  const tk = botToken;
+
   // Size check
   if (fileSize > MAX_FILE_SIZE) {
-    await sendTelegramMessage(chatId, `⚠️ File quá lớn (${(fileSize / 1024 / 1024).toFixed(1)}MB). Tối đa 20MB.`);
+    await sendTelegramMessage(chatId, `⚠️ File quá lớn (${(fileSize / 1024 / 1024).toFixed(1)}MB). Tối đa 20MB.`, tk);
     return;
   }
 
   // Type check
   const allowed = ALLOWED_MIME_PREFIXES.some((p) => mimeType.startsWith(p));
   if (!allowed) {
-    await sendTelegramMessage(chatId, `⚠️ Loại file không hỗ trợ: ${mimeType}`);
+    await sendTelegramMessage(chatId, `⚠️ Loại file không hỗ trợ: ${mimeType}`, tk);
     return;
   }
 
   console.error(`[Bot] File from ${userName}: ${fileName} (${(fileSize / 1024).toFixed(1)}KB, ${mimeType})`);
-  await sendTelegramMessage(chatId, `📤 Đang upload <b>${fileName}</b>...`);
+  await sendTelegramMessage(chatId, `📤 Đang upload <b>${fileName}</b>...`, tk);
 
   try {
     // Get file URL from Telegram — find token for this tenant
@@ -789,7 +792,8 @@ async function handleFileUpload(
       `✅ <b>File đã lưu</b>\n` +
       `📎 ${fileName} (${sizeStr})\n` +
       `🔗 ID: <code>${result.id}</code>` +
-      (caption ? `\n📝 ${caption}` : "")
+      (caption ? `\n📝 ${caption}` : ""),
+      tk,
     );
 
     // If has caption, process it as a message with file context
