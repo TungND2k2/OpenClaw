@@ -246,7 +246,9 @@ BẮT BUỘC TUÂN THỦ:
     try {
       const child = execFileAsync(
         "claude",
-        ["--print", "--output-format", "text", "--max-turns", "15"],
+        ["--print", "--output-format", "text", "--max-turns", "15",
+         "--system-prompt", this.systemPrompt + toolReminder,
+         "--no-session-persistence"],
         {
           encoding: "utf-8",
           timeout: 60_000,
@@ -255,8 +257,8 @@ BẮT BUỘC TUÂN THỦ:
         },
       );
 
-      // Write prompt to stdin
-      child.child.stdin?.write(fullPrompt);
+      // Write only user message to stdin (system prompt via --system-prompt flag)
+      child.child.stdin?.write(prompt);
       child.child.stdin?.end();
 
       const { stdout } = await child;
