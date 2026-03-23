@@ -964,7 +964,51 @@ export async function processWithCommander(input: {
     }
   }
 
-  const systemPrompt = buildCommanderPrompt(input.tenantName, input.userName, input.userRole, input.aiConfig) + knowledgeContext + fileContext + formContext;
+  // ── Step 3c: Onboarding context — guide user proactively ──
+  let onboardingContext = "";
+  try {
+    const collections = await listCollections(input.tenantId);
+    const uploadedFileCount = uploadedFiles.length;
+    const workerTemplates = (await getPersonas(input.tenantId));
+    const { listCrons } = await import("../modules/cron/cron.service.js");
+    const crons = await listCrons(input.tenantId);
+
+    const hasCollections = collections.length > 0;
+    const hasFiles = uploadedFileCount > 0;
+    const hasWorkers = workerTemplates.length > 0;
+    const hasCrons = crons.length > 0;
+    const cfg = input.aiConfig as any;
+    const persona = cfg.persona ?? cfg.bot_intro ?? "";
+
+    // Detect if bot is newly configured but empty
+    const isNewBot = !hasCollections && !hasFiles && !hasWorkers && !hasCrons;
+    const isPartialSetup = (hasCollections || hasFiles) && (!hasWorkers || !hasCrons);
+
+    if (isNewBot && persona) {
+      onboardingContext = `\n\nONBOARDING — BOT MỚI CONFIG:
+Bot persona: "${persona}"
+Hiện tại bot CHƯA CÓ gì: không collections, không files, không workers, không crons.
+→ BẠN PHẢI CHỦ ĐỘNG hỏi user:
+  1. Công ty/tổ chức làm gì? Sản phẩm/dịch vụ chính?
+  2. Bao nhiêu người dùng bot? Roles gì?
+  3. Cần quản lý gì nhất? (đơn hàng, dự án, khách hàng...)
+  4. Có sẵn tài liệu/cẩm nang nào không?
+→ Sau khi hiểu → ĐỀ XUẤT tạo workers, collections, forms, crons phù hợp
+→ KHÔNG CHỜ user hỏi — BẠN hỏi trước`;
+    } else if (isPartialSetup) {
+      const missing: string[] = [];
+      if (!hasWorkers) missing.push("workers (nhân sự AI chuyên biệt)");
+      if (!hasCrons) missing.push("cron (tự động báo cáo/nhắc nhở)");
+      if (!hasFiles) missing.push("tài liệu (cẩm nang, hướng dẫn)");
+
+      onboardingContext = `\n\nONBOARDING — CHƯA HOÀN THÀNH:
+Đã có: ${hasCollections ? collections.length + " bảng dữ liệu" : ""}${hasFiles ? ", " + uploadedFileCount + " files" : ""}${hasWorkers ? ", " + workerTemplates.length + " workers" : ""}${hasCrons ? ", " + crons.length + " crons" : ""}
+Chưa có: ${missing.join(", ")}
+→ Khi phù hợp, CHỦ ĐỘNG đề xuất thêm: "${missing[0]}" để hệ thống hoàn thiện hơn`;
+    }
+  } catch {}
+
+  const systemPrompt = buildCommanderPrompt(input.tenantName, input.userName, input.userRole, input.aiConfig) + knowledgeContext + fileContext + formContext + onboardingContext;
 
   // ── Step 4: Commander THINKS ─────────────────────────────
   await input.onProgress?.("🤖 Commander đang suy nghĩ...");
