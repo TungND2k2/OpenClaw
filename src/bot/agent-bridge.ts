@@ -946,7 +946,7 @@ export async function processWithCommander(input: {
       }
       return toolResult;
     },
-    maxToolLoops: 5,
+    maxToolLoops: 10,
   });
 
   try {

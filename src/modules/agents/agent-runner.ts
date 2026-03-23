@@ -246,7 +246,7 @@ BẮT BUỘC TUÂN THỦ:
     try {
       const child = execFileAsync(
         "claude",
-        ["--print", "--output-format", "text", "--max-turns", "5"],
+        ["--print", "--output-format", "text", "--max-turns", "15"],
         {
           encoding: "utf-8",
           timeout: 60_000,
