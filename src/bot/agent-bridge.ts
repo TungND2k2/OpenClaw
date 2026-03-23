@@ -923,19 +923,8 @@ export async function processWithCommander(input: {
   // ── Step 4: Commander THINKS ─────────────────────────────
   await input.onProgress?.("🤖 Commander đang suy nghĩ...");
 
-  // Tool name → friendly label map
-  const toolLabels: Record<string, string> = {
-    list_files: "📂 Đang xem danh sách file...",
-    read_file_content: "📖 Đang đọc nội dung file...",
-    list_workflows: "⚙️ Đang xem quy trình...",
-    create_workflow: "🔧 Đang tạo quy trình...",
-    create_form: "📋 Đang tạo form...",
-    search_knowledge: "🔍 Đang tìm kiến thức...",
-    save_knowledge: "💾 Đang lưu kiến thức...",
-    save_tutorial: "📝 Đang lưu tutorial...",
-    get_dashboard: "📊 Đang lấy dashboard...",
-    send_file: "📤 Đang gửi file...",
-  };
+  // Dynamic tool progress — no hardcoded labels
+  let toolCallCount = 0;
 
   // Hybrid routing — simple questions → fast-api (2s), complex → CLI (15s)
   const topScore = knowledge.length > 0 ? knowledge[0].matchScore : 0;
@@ -948,7 +937,9 @@ export async function processWithCommander(input: {
     tools: [],
     systemPrompt,
     executeTool: async (tool, args) => {
-      await input.onProgress?.(toolLabels[tool] ?? `🔄 Đang thực thi ${tool}...`);
+      toolCallCount++;
+      const argsPreview = tool === "ssh_exec" ? (args.command as string ?? "") : "";
+      await input.onProgress?.(`🔄 [${toolCallCount}] ${tool}${argsPreview ? `: ${argsPreview.substring(0, 50)}` : ""}...`);
       const toolResult = await executeTool(tool, args, input.tenantId);
       if (toolResult && typeof toolResult === "object" && (toolResult as any).__send_file__) {
         _files.push({ url: (toolResult as any).url, fileName: (toolResult as any).fileName, mimeType: (toolResult as any).mimeType });
