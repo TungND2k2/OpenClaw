@@ -27,6 +27,7 @@ export const knowledgeEntries = pgTable(
     sourceAgentId: text("source_agent_id")
       .notNull()
       .references(() => agents.id),
+    tenantId: text("tenant_id"),
     scope: text("scope").notNull(),
     relevanceScore: real("relevance_score").notNull().default(0.5),
     confidence: real("confidence").notNull().default(0.5),

@@ -879,6 +879,7 @@ export async function processWithCommander(input: {
     domain: "general",
     scope: ["global", `domain:sales`, `domain:general`],
     limit: 3,
+    tenantId: input.tenantId,
   });
 
   let knowledgeContext = "";
@@ -1035,6 +1036,7 @@ export async function processWithCommander(input: {
           tools,
           keywords,
           sourceAgentId: commanderAgentId,
+          tenantId: input.tenantId,
         });
         console.error(`[Pipeline] ✓ Knowledge ${action}: ${[...new Set(tools)].join(",")} (${ruleId.substring(0, 8)})`);
       } catch (ke: any) {

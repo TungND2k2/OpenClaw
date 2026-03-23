@@ -29,6 +29,7 @@ export async function storeKnowledge(input: {
   outcome?: "success" | "failure" | "neutral";
   confidence?: number;
   contextSnapshot?: Record<string, unknown>;
+  tenantId?: string;
 }): Promise<KnowledgeEntry> {
   const db = getDb();
   const now = nowMs();
@@ -43,6 +44,7 @@ export async function storeKnowledge(input: {
     tags: JSON.stringify(input.tags),
     sourceTaskId: input.sourceTaskId ?? null,
     sourceAgentId: input.sourceAgentId,
+    tenantId: input.tenantId ?? null,
     scope: input.scope ?? "global",
     relevanceScore: 0.5,
     confidence: input.confidence ?? 0.5,
@@ -71,6 +73,7 @@ export async function retrieveKnowledge(context: {
   domain: string;
   scope?: string[];
   limit?: number;
+  tenantId?: string;
 }): Promise<RetrievedKnowledge[]> {
   const db = getDb();
 
@@ -79,6 +82,11 @@ export async function retrieveKnowledge(context: {
     sql`${knowledgeEntries.supersededById} IS NULL`,
     sql`(${knowledgeEntries.expiresAt} IS NULL OR ${knowledgeEntries.expiresAt} > ${Date.now()})`,
   ];
+
+  // Filter by tenant — only see knowledge for this bot
+  if (context.tenantId) {
+    conditions.push(sql`(${knowledgeEntries.tenantId} = ${context.tenantId} OR ${knowledgeEntries.tenantId} IS NULL)`);
+  }
 
   if (context.scope && context.scope.length > 0) {
     const scopeConditions = context.scope.map(
