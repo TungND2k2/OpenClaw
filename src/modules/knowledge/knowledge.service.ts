@@ -139,16 +139,19 @@ export async function mergeOrCreateRule(input: {
     return { action: "skipped", ruleId: "" };
   }
 
-  // Find existing rule with same intent (same tool combination)
+  // Find existing rule with same intent (same tool combination) — PER TENANT
+  const conditions: any[] = [
+    eq(knowledgeEntries.type, "best_practice"),
+    sql`${knowledgeEntries.supersededById} IS NULL`,
+  ];
+  if (input.tenantId) {
+    conditions.push(sql`(${knowledgeEntries.tenantId} = ${input.tenantId})`);
+  }
   const allRules = await db.select().from(knowledgeEntries)
-    .where(and(
-      eq(knowledgeEntries.type, "best_practice"),
-      sql`${knowledgeEntries.supersededById} IS NULL`,
-    )).limit(200);
+    .where(and(...conditions)).limit(200);
 
   const existing = allRules.find(r => {
     const content = r.content as string;
-    // Extract tools from content: "→ gọi tools: X, Y"
     const toolMatch = content.match(/tools:\s*(.+)/);
     if (!toolMatch) return false;
     const existingTools = toolMatch[1].split(",").map(t => t.trim()).sort().join(",");
@@ -181,6 +184,7 @@ export async function mergeOrCreateRule(input: {
     domain: "general",
     tags: newKeywords,
     sourceAgentId: input.sourceAgentId,
+    tenantId: input.tenantId,
     outcome: "success",
   });
 
