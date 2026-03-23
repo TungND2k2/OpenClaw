@@ -587,6 +587,31 @@ async function processUpdate(
             return;
           }
 
+          // ── SSH confirm/cancel ──
+          const confirmMatch = msg.text.match(/^\/confirm\s+(\S+)$/i);
+          if (confirmMatch) {
+            const { getPendingExec, deletePendingExec, executeSSH } = await import("../modules/ssh/ssh.service.js");
+            const pending = getPendingExec(confirmMatch[1]);
+            if (!pending) { await send(msg.chat.id, "❌ Không tìm thấy lệnh chờ hoặc đã hết hạn"); return; }
+            if (pending.requestedBy !== userId) { await send(msg.chat.id, "❌ Chỉ người yêu cầu mới confirm được"); return; }
+            deletePendingExec(confirmMatch[1]);
+            await send(msg.chat.id, `⚡ Đang thực thi: <code>${pending.command}</code>`);
+            const result = await executeSSH({ host: pending.host, port: pending.port, user: pending.user, command: pending.command });
+            const output = result.stdout ? `<pre>${result.stdout.substring(0, 3000)}</pre>` : "(không có output)";
+            await send(msg.chat.id, `✅ Hoàn thành (exit: ${result.exitCode})\n${output}${result.stderr ? `\n⚠️ ${result.stderr.substring(0, 500)}` : ""}`);
+            return;
+          }
+
+          const cancelMatch = msg.text.match(/^\/cancel\s+(\S+)$/i);
+          if (cancelMatch) {
+            const { getPendingExec, deletePendingExec } = await import("../modules/ssh/ssh.service.js");
+            const pending = getPendingExec(cancelMatch[1]);
+            if (!pending) { await send(msg.chat.id, "❌ Không tìm thấy lệnh chờ"); return; }
+            deletePendingExec(cancelMatch[1]);
+            await send(msg.chat.id, `🚫 Đã huỷ lệnh: <code>${pending.command}</code>`);
+            return;
+          }
+
           // ── Permission commands: /grant, /deny, /revoke ──
           const { grantPermission: gp, revokePermission: rvk, resolvePermissionRequest: rpr, getPendingRequests: gpr } = await import("../modules/permissions/permission.service.js");
 

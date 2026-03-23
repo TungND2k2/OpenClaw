@@ -599,6 +599,67 @@ export async function executeTool(tool: string, args: Record<string, unknown>, t
       return { cancelled: true };
     }
 
+    // ── SSH Tools (Admin only) ──────────────────────────────
+
+    case "ssh_exec": {
+      if (!_currentUser || _currentUser.role !== "admin") return { error: "Chỉ admin mới dùng SSH" };
+      const { classifyCommand, executeSSH, createPendingExec } = await import("../modules/ssh/ssh.service.js");
+
+      const host = args.host as string;
+      const command = args.command as string;
+      const port = (args.port as number) ?? 2357;
+      const user = (args.user as string) ?? "root";
+
+      if (!host || !command) return { error: "Cần host và command" };
+
+      const tier = classifyCommand(command);
+
+      if (tier === "blocked") {
+        return { error: `⛔ Lệnh bị chặn vì lý do bảo mật: ${command}` };
+      }
+
+      if (tier === "confirm") {
+        const pending = createPendingExec({ host, port, user, command, requestedBy: _currentUser.id });
+        return {
+          __needs_confirm__: true,
+          pendingId: pending.id,
+          command,
+          host,
+          message: `⚠️ Lệnh này cần xác nhận:\n\n<code>${command}</code>\n\nServer: ${host}:${port}\n\nGõ <code>/confirm ${pending.id}</code> để thực thi\nGõ <code>/cancel ${pending.id}</code> để huỷ\n\n⏱ Hết hạn sau 5 phút`,
+        };
+      }
+
+      // Auto-approve → execute immediately
+      const result = await executeSSH({ host, port, user, command });
+      return {
+        host,
+        command,
+        stdout: result.stdout.substring(0, 3000),
+        stderr: result.stderr.substring(0, 500),
+        exitCode: result.exitCode,
+      };
+    }
+
+    case "ssh_confirm": {
+      if (!_currentUser || _currentUser.role !== "admin") return { error: "Chỉ admin" };
+      const { getPendingExec, deletePendingExec, executeSSH: execSSH } = await import("../modules/ssh/ssh.service.js");
+
+      const pendingId = args.pending_id as string;
+      const pending = getPendingExec(pendingId);
+      if (!pending) return { error: "Không tìm thấy lệnh chờ hoặc đã hết hạn" };
+
+      deletePendingExec(pendingId);
+      const result = await execSSH({ host: pending.host, port: pending.port, user: pending.user, command: pending.command });
+      return {
+        confirmed: true,
+        host: pending.host,
+        command: pending.command,
+        stdout: result.stdout.substring(0, 3000),
+        stderr: result.stderr.substring(0, 500),
+        exitCode: result.exitCode,
+      };
+    }
+
     // ── Bot Management Tools (Super Admin only) ────────────
 
     case "create_bot": {
