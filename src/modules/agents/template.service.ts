@@ -22,6 +22,7 @@ export interface CreateTemplateInput {
   costBudgetUsd?: number;
   autoSpawn?: boolean;
   autoSpawnCount?: number;
+  tenantId?: string;
 }
 
 export type TemplateRecord = typeof agentTemplates.$inferSelect;
@@ -46,6 +47,7 @@ export async function createTemplate(input: CreateTemplateInput): Promise<Templa
     costBudgetUsd: input.costBudgetUsd ?? null,
     autoSpawn: input.autoSpawn ?? false,
     autoSpawnCount: input.autoSpawnCount ?? 1,
+    tenantId: input.tenantId ?? null,
     status: "active",
     createdAt: now,
     updatedAt: now,

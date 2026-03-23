@@ -344,7 +344,14 @@ async function handleJob(job: QueueJob): Promise<void> {
       try { await callTelegramWithToken(tk, "deleteMessage", { chat_id: job.chatId, message_id: progressMsgId }); } catch {}
       personaStreamed = true;
     }
-    const formatted = markdownToTelegramHtml(`${pm.emoji} <b>${pm.name}:</b>\n${pm.content}`);
+    // Unicode bold name + separator for visual prominence
+    const boldName = pm.name.split("").map(c => {
+      const code = c.charCodeAt(0);
+      if (code >= 65 && code <= 90) return String.fromCodePoint(0x1D5D4 + code - 65); // 𝗔-𝗭
+      if (code >= 97 && code <= 122) return String.fromCodePoint(0x1D5EE + code - 97); // 𝗮-𝘇
+      return c;
+    }).join("");
+    const formatted = markdownToTelegramHtml(`───────────────────\n${pm.emoji} ${boldName}\n───────────────────\n${pm.content}`);
     await sendTelegramMessage(job.chatId, formatted, tk);
   };
 

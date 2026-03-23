@@ -296,6 +296,7 @@ export async function executeTool(tool: string, args: Record<string, unknown>, t
         engine: (args.engine as any) ?? "fast-api",
         maxConcurrentTasks: (args.max_concurrent_tasks as number) ?? 1,
         autoSpawn: false,
+        tenantId,
       });
       return { id: tmpl.id, name: tmpl.name, role: tmpl.role };
     }
