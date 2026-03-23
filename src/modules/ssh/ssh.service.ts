@@ -146,7 +146,7 @@ export async function executeSSH(input: {
 
   const port = input.port ?? 22;
   const user = input.user ?? "root";
-  const timeout = input.timeout ?? 30000;
+  const timeout = input.timeout ?? 120000; // 2 min for heavy commands like apt install
 
   try {
     const { stdout, stderr } = await execFileAsync(

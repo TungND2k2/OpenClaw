@@ -1097,6 +1097,7 @@ function buildCommanderPrompt(
     "list_rows/search_all có hỗ trợ keyword filter — dùng search_all(keyword='từ khoá') để lọc, KHÔNG load hết rồi lọc bằng text",
     "Khi kết quả > 20 rows → trả summary (tổng, phân loại) + hỏi user muốn xem chi tiết phần nào",
     "Ngắn gọn, thực tế, đúng trọng tâm câu hỏi",
+    "Khi thực thi task nhiều bước (deploy, cài đặt, setup...): chạy hết TẤT CẢ bước cho đến khi HOÀN THÀNH mục tiêu user đề ra. Nếu 1 bước fail → tự tìm cách fix → retry → tiếp bước sau. KHÔNG dừng để hỏi user giữa chừng trừ khi cần thông tin chỉ user mới có. Chỉ trả lời khi đã hoàn thành hoặc đã thử 3 lần không fix được",
   ];
   const rules = [...defaultRules, ...((cfg.rules as string[]) ?? [])];
   const customInstructions = (cfg.custom_instructions as string) ?? "";
