@@ -1046,6 +1046,8 @@ Chưa có: ${missing.join(", ")}
     let personaMessages: PersonaMsg[] | undefined;
     const personas = await getPersonas(input.tenantId);
 
+    console.error(`[Pipeline] Personas found: ${personas.length} (${personas.map(p => p.name).join(", ")})`);
+
     if (personas.length >= 2 && input.userMessage.length > 20) {
       try {
         const { getConfig: gc3 } = await import("../config.js");
