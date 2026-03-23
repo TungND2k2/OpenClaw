@@ -336,6 +336,18 @@ async function handleJob(job: QueueJob): Promise<void> {
     }
   };
 
+  // Persona streaming — send each persona message immediately when ready
+  let personaStreamed = false;
+  const onPersonaMessage = async (pm: { emoji: string; name: string; content: string }) => {
+    if (!personaStreamed && progressMsgId) {
+      // Delete progress message on first persona message
+      try { await callTelegramWithToken(tk, "deleteMessage", { chat_id: job.chatId, message_id: progressMsgId }); } catch {}
+      personaStreamed = true;
+    }
+    const formatted = markdownToTelegramHtml(`${pm.emoji} <b>${pm.name}:</b>\n${pm.content}`);
+    await sendTelegramMessage(job.chatId, formatted, tk);
+  };
+
   const response = await processWithCommander({
     userMessage: job.text,
     userName: job.userName,
@@ -346,25 +358,16 @@ async function handleJob(job: QueueJob): Promise<void> {
     conversationHistory: history,
     aiConfig: (tenant?.aiConfig ?? {}) as Record<string, unknown>,
     onProgress,
+    onPersonaMessage,
     sessionId: session.id,
   });
 
   // ── Edit progress message → final response ──
   await appendMessage(session.id, { role: "assistant", content: response.text, at: Date.now() });
 
-  // Multi-persona: send each persona message as separate Telegram message
-  if (response.personaMessages && response.personaMessages.length >= 2) {
-    // Delete progress message
-    if (progressMsgId) {
-      try { await callTelegramWithToken(tk, "deleteMessage", { chat_id: job.chatId, message_id: progressMsgId }); } catch {}
-    }
-    // Send each persona response as separate message
-    for (const pm of response.personaMessages) {
-      const formatted = markdownToTelegramHtml(`${pm.emoji} <b>${pm.name}:</b>\n${pm.content}`);
-      await sendTelegramMessage(job.chatId, formatted, tk);
-      // Small delay between messages for natural feel
-      await new Promise(r => setTimeout(r, 800));
-    }
+  // If personas already streamed, skip sending again
+  if (personaStreamed) {
+    // Already sent — do nothing
   } else {
     // Single response (normal flow)
     const formattedText = markdownToTelegramHtml(response.text);

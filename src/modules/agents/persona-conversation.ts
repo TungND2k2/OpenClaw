@@ -115,6 +115,7 @@ export async function runPersonaConversation(input: {
   executeTool: (tool: string, args: Record<string, unknown>) => Promise<unknown>;
   engine: LLMEngine;
   maxRounds?: number;
+  onPersonaMessage?: (msg: PersonaMessage) => Promise<void>;
 }): Promise<PersonaMessage[]> {
   const messages: PersonaMessage[] = [];
   const maxRounds = input.maxRounds ?? 3;
@@ -150,7 +151,7 @@ ${isLastSpeaker ? "- Đây là lượt cuối — đưa ra kết luận." : ""}`
 
       const runner = new AgentRunner({
         agent: { id: `persona_${persona.name}`, name: persona.name } as any,
-        engine: "fast-api" as LLMEngine,  // Always fast-api for persona rounds — CLI too slow
+        engine: input.engine,
         tools: [],
         systemPrompt,
         executeTool: input.executeTool,
@@ -161,8 +162,14 @@ ${isLastSpeaker ? "- Đây là lượt cuối — đưa ra kết luận." : ""}`
         const result = await runner.think(input.userMessage, input.conversationHistory);
         const content = result.text.trim();
 
-        messages.push({ persona, content });
+        const personaMsg = { persona, content };
+        messages.push(personaMsg);
         roundMessages.push(`${persona.emoji} ${persona.name}: ${content}`);
+
+        // Stream: send immediately to Telegram
+        if (input.onPersonaMessage) {
+          await input.onPersonaMessage(personaMsg);
+        }
 
         // If response doesn't tag another persona → conversation done
         const tagsAnother = input.participantNames.some(n =>
