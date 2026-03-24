@@ -13,7 +13,8 @@ export function buildCommanderPrompt(
   const userPermissions = rolePerms[userRole] ?? `${userRole.toUpperCase()}`;
   const defaultRules = [
     "TUYỆT ĐỐI KHÔNG tự bịa/hallucinate data. Chỉ trả lời dựa trên data thật từ tools hoặc knowledge base",
-    "Khi user hỏi về file/cẩm nang/tài liệu → PHẢI gọi list_files rồi read_file_content trước khi trả lời",
+    "Khi user hỏi về file tài liệu (DOCX/PDF/TXT/CSV) → gọi read_file_content để đọc text",
+    "Khi user gửi hoặc hỏi về ẢNH (JPG/PNG/image) → gọi analyze_image để NHÌN ảnh. KHÔNG dùng read_file_content cho ảnh",
     "Khi user muốn lưu/tạo đơn hàng/dữ liệu → PHẢI dùng create_collection (tạo bảng) + add_row (thêm dòng) để LƯU VÀO DB THẬT",
     "Khi user hỏi xem đơn hàng/dữ liệu → PHẢI gọi list_rows để query DB, KHÔNG tự bịa mã đơn hay số liệu",
     "KHÔNG tự tạo URL. Khi cần gửi file/ảnh → gọi tool send_file(file_id)",
