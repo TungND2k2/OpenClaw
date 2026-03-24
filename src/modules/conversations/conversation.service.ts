@@ -117,7 +117,7 @@ export async function getSession(sessionId: string): Promise<ConversationSession
 // ── Conversation Summary ─────────────────────────────────────
 
 const SUMMARY_THRESHOLD = 10; // summarize every N messages
-const KEEP_RECENT = 5; // keep last N messages after summary
+const KEEP_RECENT = 20; // keep last N messages — enough for 19-step forms
 
 /**
  * Build optimized history: summary + recent messages + form state.
