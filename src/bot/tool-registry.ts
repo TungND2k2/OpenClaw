@@ -39,6 +39,28 @@ export function getRegisteredTools(): string[] {
   return Array.from(registry.keys());
 }
 
+// Tool descriptions for prompt injection
+const toolDescriptions = new Map<string, string>();
+
+function registerToolWithDesc(name: string, desc: string, handler: ToolHandler) {
+  registry.set(name, handler);
+  toolDescriptions.set(name, desc);
+}
+
+export function getToolDescriptions(): Map<string, string> {
+  return toolDescriptions;
+}
+
+export function getToolListForPrompt(): string {
+  let idx = 1;
+  let result = "";
+  for (const [name, desc] of toolDescriptions) {
+    result += `${idx}. ${name} — ${desc}\n`;
+    idx++;
+  }
+  return result;
+}
+
 export async function executeTool(
   tool: string,
   args: Record<string, unknown>,
@@ -871,6 +893,61 @@ registerTool("stop_bot", async (args, _tenantId, ctx) => {
 });
 
 // ── Event Subscriptions ─────────────────────────────────
+
+// ── Tool Descriptions (for prompt injection) ────────────
+
+const _descs: Record<string, string> = {
+  list_workflows: "Xem danh sách quy trình",
+  create_workflow: "Tạo quy trình mới (name, description, stages)",
+  create_form: "Tạo form template (name, fields[{id,label,type,required}])",
+  create_rule: "Tạo business rule (name, domain, rule_type, conditions, actions)",
+  start_workflow_instance: "Bắt đầu quy trình (template_id)",
+  save_tutorial: "Lưu tutorial (title, content, domain)",
+  save_knowledge: "Lưu kiến thức (type, title, content, domain, tags[])",
+  search_knowledge: "Tìm kiến thức đã học (domain?, tags?)",
+  get_dashboard: "Dashboard hệ thống",
+  read_file_content: "Đọc nội dung file text (DOCX/PDF/CSV) — file_id",
+  analyze_image: "Phân tích ảnh (vision) — file_id, prompt?. Dùng khi user gửi ảnh hoặc hỏi về nội dung ảnh",
+  send_file: "Gửi file cho user — file_id",
+  list_files: "Xem file đã upload (limit?)",
+  get_file: "Xem metadata file — file_id",
+  set_user_role: "Đổi role user (channel_user_id, role, display_name?)",
+  list_users: "Xem danh sách users",
+  update_ai_config: "Cập nhật config bot (key: value). Dùng khi user đổi persona/tên/rules",
+  get_ai_config: "Xem config bot hiện tại",
+  create_agent_template: "Tạo template agent/worker (name, role, system_prompt, capabilities, tools)",
+  list_agent_templates: "Xem agent templates",
+  spawn_agent: "Tạo agent từ template (template_name, count?)",
+  kill_agent: "Tắt agent (agent_id)",
+  list_agents: "Xem agents đang chạy",
+  create_collection: "Tạo bảng dữ liệu (name, description?, fields?)",
+  list_collections: "Xem danh sách bảng",
+  add_row: "Thêm dòng vào bảng (collection, data{key:value}). LƯU VÀO DB THẬT",
+  list_rows: "Xem dữ liệu trong bảng (collection, limit?, keyword?)",
+  update_row: "Cập nhật dòng (row_id, data{key:value})",
+  delete_row: "Xoá dòng (row_id)",
+  search_all: "Tìm kiếm trong TẤT CẢ bảng (keyword?)",
+  db_query: "Query database (table, action, filter?, data?) — ADMIN only",
+  request_permission: "Xin quyền truy cập (resource, access, reason)",
+  start_form: "Bắt đầu điền form template (form_name). Tự load fields từ DB",
+  update_form_field: "Lưu 1 field vào form đang điền (field_name, value)",
+  get_form_state: "Xem trạng thái form đang điền",
+  cancel_form: "Huỷ form đang điền",
+  create_cron: "Tạo cron job (name, schedule, action, args?)",
+  list_crons: "Xem cron jobs",
+  delete_cron: "Xoá cron (cron_id)",
+  ssh_exec: "Chạy lệnh trên server qua SSH (host, command, port?, user?). ADMIN only",
+  create_bot: "Tạo bot Telegram mới (name, token, persona?). SUPER ADMIN only",
+  list_bots: "Xem tất cả bots đang chạy",
+  stop_bot: "Dừng bot (tenant_id)",
+  subscribe_agent: "Đăng ký agent theo dõi event (agent_name, event_pattern, action)",
+  list_subscriptions: "Xem subscriptions",
+  unsubscribe_agent: "Huỷ subscription (subscription_id)",
+};
+
+for (const [name, desc] of Object.entries(_descs)) {
+  toolDescriptions.set(name, desc);
+}
 
 registerTool("subscribe_agent", async (args, tenantId) => {
   const { createSubscription } = await import("../modules/events/event-bus.js");
