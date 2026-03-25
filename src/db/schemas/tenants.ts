@@ -38,7 +38,6 @@ export const tenants = pgTable(
     botStatus: text("bot_status").notNull().default("active"), // active | stopped
     config: jsonb("config").notNull().default({}),
     aiConfig: jsonb("ai_config").notNull().default({}),
-    instructions: text("instructions").notNull().default(""), // Bot self-updating guide
     status: text("status")
       .notNull()
       .default("active"),
