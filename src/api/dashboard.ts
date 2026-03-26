@@ -160,8 +160,8 @@ export async function startDashboardAPI(port = 3102) {
     res.json(rows);
   });
 
-  // SPA fallback
-  app.get("*", (_req, res) => {
+  // SPA fallback (Express 5 syntax)
+  app.use((_req, res) => {
     try {
       res.sendFile(path.resolve(webDist, "index.html"));
     } catch { res.status(404).send("Not found"); }
