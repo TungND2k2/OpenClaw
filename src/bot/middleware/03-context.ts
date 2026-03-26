@@ -17,7 +17,7 @@ export async function contextMiddleware(ctx: PipelineContext): Promise<void> {
   }
   const resourceContext = formatSummaryForPrompt(summary);
   const resLog = `${summary.forms.length} forms, ${summary.collections.length} collections, ${summary.filesCount} files`;
-  console.error(`[Context] Resources: ${resLog}`);
+  // logged by structured logger in execute middleware
   await ctx.onProgress?.(`📋 Context: ${resLog}`);
 
   // ── File list ───────────────────────────────────────
@@ -59,5 +59,5 @@ export async function contextMiddleware(ctx: PipelineContext): Promise<void> {
   // ── Log token estimate ──────────────────────────────
   const promptTokens = estimateTokens(ctx.systemPrompt);
   const historyTokens = estimateTokens(ctx.conversationHistory.map(m => m.content).join(""));
-  console.error(`[Context] Tokens: prompt ~${promptTokens}, history ~${historyTokens}, total ~${promptTokens + historyTokens}`);
+  // token counts logged in execute middleware
 }

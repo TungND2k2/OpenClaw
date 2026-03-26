@@ -60,12 +60,6 @@ export async function processWithCommander(input: {
 }): Promise<CommanderResponse> {
   const startTime = Date.now();
 
-  console.error(`[Pipeline] ─── START ───────────────────────────`);
-  console.error(`[Pipeline] User: ${input.userName} (${input.userRole})`);
-  console.error(`[Pipeline] Message: "${input.userMessage}"`);
-  console.error(`[Pipeline] Tenant: ${input.tenantId}`);
-  console.error(`[Pipeline] History: ${input.conversationHistory.length} messages`);
-
   // ── Get Commander agent ──────────────────────────────────
   const commander = getCommander();
   if (!commander) {
@@ -87,9 +81,7 @@ export async function processWithCommander(input: {
     await assignTask(task.id, commanderAgentId, commanderAgentId);
     await startTask(task.id, commanderAgentId);
     taskId = task.id;
-    console.error(`[Pipeline] Task: ${task.id} → Commander (${commander.agent.name})`);
   } catch (taskErr: any) {
-    console.error(`[Pipeline] Task creation skipped: ${taskErr.message}`);
   }
 
   // ── Build pipeline context ───────────────────────────────

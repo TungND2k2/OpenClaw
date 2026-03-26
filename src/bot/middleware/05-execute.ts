@@ -107,7 +107,7 @@ export async function executeMiddleware(ctx: PipelineContext): Promise<void> {
   let result: { text: string; toolCalls: { tool: string }[] };
 
   if (ctx.personas.length >= 2 && ctx.userMessage.length > 15) {
-    console.error(`[Execute] → Multi-persona mode`);
+    // multi-persona mode
     // Route to personas — skip Commander
     try {
       const { getConfig: gc3 } = await import("../../config.js");
@@ -163,12 +163,12 @@ export async function executeMiddleware(ctx: PipelineContext): Promise<void> {
         result = await runner.think(ctx.userMessage, effectiveHistory);
       }
     } catch (pErr: any) {
-      console.error(`[Pipeline] Persona failed, fallback Commander: ${pErr.message}`);
+      // persona failed, fallback Commander
       result = await runner.think(ctx.userMessage, effectiveHistory);
     }
   } else {
     // No personas or short message — Commander handles directly
-    console.error(`[Execute] → Commander direct mode`);
+    // Commander direct mode
     result = await runner.think(ctx.userMessage, effectiveHistory);
   }
 
