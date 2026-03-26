@@ -163,9 +163,13 @@ export class AgentRunner {
       setSDKSessionId(this.tenantId, this.userId, newSessionId);
     }
 
-    // Parse tool_calls from text (SDK may output them in text)
-    const toolCalls = this.parseToolCalls(finalText);
-    if (toolCalls.length > 0) {
+    // ── Tool loop: parse → execute → query again → until no more tools ──
+    let currentText = finalText;
+    for (let loop = 0; loop < this.maxToolLoops; loop++) {
+      const toolCalls = this.parseToolCalls(currentText);
+      if (toolCalls.length === 0) break;
+
+      // Execute tools
       for (const tc of toolCalls) {
         try {
           const result = await this.executeTool(tc.tool, tc.args);
@@ -175,14 +179,14 @@ export class AgentRunner {
         }
       }
 
-      // Follow-up call with tool results
-      const toolResultText = allToolResults
+      // Feed tool results back to SDK
+      const toolResultText = allToolResults.slice(-toolCalls.length)
         .map(r => `[Tool: ${r.tool}] Result:\n${JSON.stringify(r.result, null, 2).substring(0, 1000)}`)
         .join("\n\n");
 
-      let followUp = "";
+      currentText = "";
       for await (const msg of query({
-        prompt: toolResultText + "\n\nDựa trên kết quả tools, trả lời user.",
+        prompt: toolResultText + "\n\nDựa trên kết quả, tiếp tục xử lý hoặc trả lời user.",
         options: {
           systemPrompt: this.systemPrompt,
           allowedTools: [],
@@ -190,19 +194,21 @@ export class AgentRunner {
           ...(newSessionId ? { resume: newSessionId } : {}),
         },
       })) {
-        if (msg.type === "result" && "result" in msg) followUp = (msg as any).result ?? "";
+        if (msg.type === "assistant" && (msg as any).message) {
+          for (const block of (msg as any).message.content ?? []) {
+            if (typeof block === "string") currentText += block;
+            else if (block.type === "text") currentText += block.text;
+          }
+        }
+        if (msg.type === "result" && "result" in msg) {
+          currentText = (msg as any).result ?? currentText;
+        }
       }
-
-      console.error(`${prefix} SDK done: ${allToolResults.length} tools`);
-      return {
-        text: followUp || finalText.replace(/```tool_calls[\s\S]*?```/g, "").trim(),
-        toolCalls: allToolResults,
-        sdkSessionId: newSessionId,
-      };
     }
 
-    console.error(`${prefix} SDK done: 0 tools`);
-    return { text: finalText.trim(), toolCalls: [], sdkSessionId: newSessionId };
+    const cleanText = currentText.replace(/```tool_calls[\s\S]*?```/g, "").trim();
+    console.error(`${prefix} SDK done: ${allToolResults.length} tools`);
+    return { text: cleanText || finalText.replace(/```tool_calls[\s\S]*?```/g, "").trim(), toolCalls: allToolResults, sdkSessionId: newSessionId };
   }
 
   /**
