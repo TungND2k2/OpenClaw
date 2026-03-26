@@ -61,7 +61,27 @@ export async function executeMiddleware(ctx: PipelineContext): Promise<void> {
       toolCallCount++;
       const argsPreview = tool === "ssh_exec" ? (args.command as string ?? "") : "";
       await ctx.onProgress?.(`🔄 [${toolCallCount}] ${tool}${argsPreview ? `: ${argsPreview.substring(0, 50)}` : ""}...`);
-      const toolResult = await executeTool(tool, args, ctx.tenantId, toolCtx);
+
+      // Tool execution with retry + error handling (pattern from OpenClaw)
+      let toolResult: any;
+      try {
+        toolResult = await executeTool(tool, args, ctx.tenantId, toolCtx);
+      } catch (e: any) {
+        console.error(`[Execute] Tool ${tool} failed: ${e.message} — retrying once`);
+        try {
+          toolResult = await executeTool(tool, args, ctx.tenantId, toolCtx);
+        } catch (e2: any) {
+          console.error(`[Execute] Tool ${tool} retry failed: ${e2.message}`);
+          toolResult = { error: `Tool ${tool} lỗi: ${e2.message}. Hãy báo user lỗi cụ thể, KHÔNG bịa kết quả.` };
+        }
+      }
+
+      // Sanitize: truncate large results (pattern from OpenClaw)
+      const resultStr = JSON.stringify(toolResult);
+      if (resultStr.length > 3000) {
+        console.error(`[Execute] Tool ${tool} result truncated: ${resultStr.length} → 3000 chars`);
+        toolResult = { ...toolResult, _truncated: true, _originalLength: resultStr.length };
+      }
       if (MUTATING_TOOLS.has(tool)) {
         invalidateCache(ctx.tenantId);
         // Emit event for agent subscriptions (async, non-blocking)

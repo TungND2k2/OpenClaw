@@ -1,4 +1,4 @@
-import { eq, and, sql, desc } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { getDb } from "../../db/connection.js";
 import { knowledgeEntries, knowledgeApplications } from "../../db/schema.js";
 import { newId } from "../../utils/id.js";

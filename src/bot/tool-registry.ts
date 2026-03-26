@@ -18,7 +18,6 @@ import {
 import { createCollection, listCollections, findCollection, insertRow, listRows, updateRow, deleteRow, searchAllRows } from "../modules/collections/collection.service.js";
 import { startFormSession, updateFormField, getFormState, cancelFormSession } from "../modules/conversations/conversation.service.js";
 import { checkPermission, createPermissionRequest, logAudit } from "../modules/permissions/permission.service.js";
-import { invalidateCache } from "../modules/cache/resource-cache.js";
 import { newId } from "../utils/id.js";
 import { nowMs } from "../utils/clock.js";
 
@@ -41,11 +40,6 @@ export function getRegisteredTools(): string[] {
 
 // Tool descriptions for prompt injection
 const toolDescriptions = new Map<string, string>();
-
-function registerToolWithDesc(name: string, desc: string, handler: ToolHandler) {
-  registry.set(name, handler);
-  toolDescriptions.set(name, desc);
-}
 
 export function getToolDescriptions(): Map<string, string> {
   return toolDescriptions;

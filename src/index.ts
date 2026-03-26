@@ -23,7 +23,7 @@ async function main() {
   console.error("[OpenClaw] Database ready");
 
   // 3. Initialize Agent Pool (Commander + Workers in DB)
-  const pool = initAgentPool({
+  await initAgentPool({
     workerCount: 3,
     toolExecutor: executeTool,
   });
@@ -45,17 +45,17 @@ async function main() {
   // 5. Start orchestrator tick loop
   startOrchestrator();
 
-  // 5. Start LLM proxy (if configured)
+  // 6. Start LLM proxy (if configured)
   startProxy();
 
-  // 6. Start Telegram bot (if configured)
+  // 7. Start Telegram bot (if configured)
   await startTelegramBot();
 
-  // 7. Start Dashboard API
+  // 8. Start Dashboard API
   const { startDashboardAPI } = await import("./api/dashboard.js");
   startDashboardAPI(3102);
 
-  // 7. Start stdio transport
+  // 9. Start stdio transport
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("[OpenClaw] Stdio transport connected — ready!");

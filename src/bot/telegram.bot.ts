@@ -13,12 +13,11 @@ import { getConfig } from "../config.js";
 import { processWithCommander } from "./agent-bridge.js";
 import { MessageQueue, type QueueJob } from "./message-queue.js";
 import { getOrCreateSession, appendMessage } from "../modules/conversations/conversation.service.js";
-import { listFiles } from "../modules/storage/s3.service.js";
+import { listFiles, downloadAndUpload } from "../modules/storage/s3.service.js";
 import { getTenant } from "../modules/tenants/tenant.service.js";
 import { getDb } from "../db/connection.js";
 import { tenantUsers } from "../db/schema.js";
 import { newId } from "../utils/id.js";
-import { downloadAndUpload } from "../modules/storage/s3.service.js";
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
 let _running = false;
@@ -46,13 +45,6 @@ async function callTelegramWithToken(token: string, method: string, params: Reco
   const body = await res.json() as { ok: boolean; result?: any; description?: string };
   if (!body.ok) throw new Error(`Telegram: ${body.description}`);
   return body.result;
-}
-
-// Backward-compatible wrapper — uses first bot's token or config
-async function callTelegram(method: string, params: Record<string, unknown>): Promise<any> {
-  const token = getConfig().TELEGRAM_BOT_TOKEN ?? _bots.values().next().value?.token;
-  if (!token) throw new Error("No bot token");
-  return callTelegramWithToken(token, method, params);
 }
 
 async function sendTelegramMessage(chatId: string | number, text: string, token?: string): Promise<number | undefined> {
@@ -99,22 +91,6 @@ async function sendTelegramFile(chatId: string | number, fileUrl: string, fileNa
   } catch {
     await sendTelegramMessage(chatId, `📎 <a href="${fileUrl}">${fileName}</a>${caption ? "\n" + caption : ""}`, t);
   }
-}
-
-/**
- * Send "typing..." indicator to Telegram chat.
- */
-async function sendTyping(chatId: string | number): Promise<void> {
-  try {
-    const token = getConfig().TELEGRAM_BOT_TOKEN;
-    if (!token) return;
-    await fetch(`${TELEGRAM_API}${token}/sendChatAction`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, action: "typing" }),
-      signal: AbortSignal.timeout(5000),
-    });
-  } catch {}
 }
 
 /**
@@ -302,28 +278,36 @@ async function handleJob(job: QueueJob): Promise<void> {
 
   await appendMessage(session.id, { role: "user", content: job.text, at: Date.now() });
 
-  // ── Auto-summarize if history too long ──
+  // ── Auto-compact if history too long (pattern from OpenClaw) ──
   try {
-    const { autoSummarize } = await import("../modules/conversations/conversation.service.js");
-    await autoSummarize(session.id, async (text: string) => {
-      // Use fast API to summarize (cheap + fast)
-      const { callFastAPI } = await import("../modules/agents/agent-runner.js");
+    const { compactSession } = await import("../modules/context/compactor.js");
+    const { callFastAPI } = await import("../modules/agents/agent-runner.js");
+    const result = await compactSession(session.id, async (text: string) => {
       return await callFastAPI(
-        "Tóm tắt ngắn gọn hội thoại sau (giữ lại tất cả data quan trọng: tên, số, ID, trạng thái):\n\n" + text,
+        "Tóm tắt ngắn gọn hội thoại sau. Giữ lại: tên, số, ID, trạng thái, quy trình. Bỏ: lời chào, câu hỏi lặp.\n\n" + text,
         "Bạn là bot tóm tắt. Trả về 1 paragraph ngắn gọn.",
         [],
       );
     });
-  } catch {}
+    if (result.compacted) {
+      console.error(`[Compact] ${result.summarizedCount} messages → summary, kept ${result.keptCount}`);
+    }
+  } catch (e: any) {
+    console.error(`[Compact] Error: ${e.message}`);
+  }
 
-  // ── Build optimized history (summary + recent + form state) ──
-  const { buildOptimizedHistory } = await import("../modules/conversations/conversation.service.js");
-  // Re-fetch session after potential summarization
+  // ── Build history from session ──
   const freshSession = await getOrCreateSession({
     tenantId: job.tenantId, channel: "telegram",
     channelUserId: job.userId, userName: job.userName, userRole: job.userRole,
   });
-  const { history } = buildOptimizedHistory(freshSession);
+  const state = (typeof freshSession.state === "string" ? JSON.parse(freshSession.state) : freshSession.state) as any;
+  const messages = state?.messages ?? [];
+  const summary = state?.summary ?? "";
+  const history = [
+    ...(summary ? [{ role: "system" as const, content: `[TÓM TẮT]\n${summary}` }] : []),
+    ...messages.map((m: any) => ({ role: m.role as string, content: m.content as string })),
+  ];
 
   // ── Send progress message immediately ──
   const tk = job.botToken;

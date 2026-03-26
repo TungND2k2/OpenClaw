@@ -36,51 +36,6 @@ function releaseCLI(): void {
   if (next) next();
 }
 
-// ── Hybrid Engine Detection ─────────────────────────────────
-// Simple questions → fast-api (2s), complex/tool-needing → CLI (15s)
-
-const TOOL_KEYWORDS = [
-  "file", "ảnh", "đọc", "tạo", "xoá", "sửa", "cập nhật", "update",
-  "đơn hàng", "đơn", "dashboard", "workflow", "quy trình", "form",
-  "rule", "agent", "template", "user", "role", "phân quyền",
-  "lưu", "upload", "download", "gửi", "liệt kê", "danh sách",
-  "tìm", "search", "phân tích", "analyse", "analyze", "knowledge",
-  "cẩm nang", "tài liệu", "invoice", "report", "báo cáo",
-  "collection", "bảng", "nhập", "xuất", "duyệt", "approve",
-];
-
-const SIMPLE_PATTERNS = [
-  /^(xin\s+)?chào/i, /^hi\b/i, /^hello/i, /^hey/i,
-  /^cảm ơn/i, /^thanks/i, /^ok\b/i, /^được/i,
-  /^có$/i, /^không$/i, /^ừm?$/i, /^vâng$/i,
-];
-
-export function detectEngine(
-  userMessage: string,
-  knowledgeHitScore: number,
-  hasTools: boolean,
-): LLMEngine {
-  const msg = userMessage.trim().toLowerCase();
-
-  // Short greetings → fast-api
-  if (msg.length < 20 && SIMPLE_PATTERNS.some(p => p.test(msg))) {
-    return "fast-api";
-  }
-
-  // Tool keywords detected → CLI (needs tool calling)
-  if (hasTools && TOOL_KEYWORDS.some(kw => msg.includes(kw))) {
-    return "claude-cli";
-  }
-
-  // High knowledge hit → fast-api (answer from cache)
-  if (knowledgeHitScore > 0.6 && !TOOL_KEYWORDS.some(kw => msg.includes(kw))) {
-    return "fast-api";
-  }
-
-  // Default: CLI for complex messages, fast-api for short ones
-  return msg.length > 30 && hasTools ? "claude-cli" : "fast-api";
-}
-
 export interface ToolDefinition {
   name: string;
   description: string;
