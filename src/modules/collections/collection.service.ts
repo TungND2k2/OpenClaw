@@ -84,6 +84,7 @@ export async function insertRow(input: {
   collectionId: string;
   data: Record<string, unknown>;
   createdBy?: string;
+  createdByName?: string;
 }) {
   const db = getDb();
   const id = newId();
@@ -93,10 +94,11 @@ export async function insertRow(input: {
     id, collectionId: input.collectionId,
     data: input.data,
     createdBy: input.createdBy ?? null,
+    createdByName: input.createdByName ?? null,
     createdAt: now, updatedAt: now,
   });
 
-  return { id, ...input.data };
+  return { id, created_by: input.createdBy, created_by_name: input.createdByName, ...input.data };
 }
 
 // ── List Rows (with pagination + smart search) ──────────────
@@ -151,14 +153,19 @@ export async function listRows(
 
 // ── Update Row ───────────────────────────────────────────────
 
-export async function updateRow(rowId: string, data: Record<string, unknown>) {
+export async function updateRow(rowId: string, data: Record<string, unknown>, updatedBy?: string, updatedByName?: string) {
   const db = getDb();
   const existing = (await db.select().from(collectionRows).where(eq(collectionRows.id, rowId)).limit(1))[0];
   if (!existing) return null;
 
   const merged = { ...(existing.data as Record<string, unknown>), ...data };
-  await db.update(collectionRows).set({ data: merged, updatedAt: Date.now() }).where(eq(collectionRows.id, rowId));
-  return { id: rowId, data: merged };
+  await db.update(collectionRows).set({
+    data: merged,
+    updatedByUserId: updatedBy ?? null,
+    updatedByName: updatedByName ?? null,
+    updatedAt: Date.now(),
+  }).where(eq(collectionRows.id, rowId));
+  return { id: rowId, updated_by: updatedBy, data: merged };
 }
 
 // ── Delete Row ───────────────────────────────────────────────

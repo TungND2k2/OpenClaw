@@ -398,7 +398,7 @@ registerTool("list_collections", async (_args, tenantId) => {
   return await listCollections(tenantId);
 });
 
-registerTool("add_row", async (args, tenantId) => {
+registerTool("add_row", async (args, tenantId, ctx) => {
   let collectionId = args.collection_id as string;
   if (!collectionId || !collectionId.startsWith("01")) {
     const col = await findCollection(tenantId, (args.collection as string) ?? (args.collection_id as string) ?? "");
@@ -408,7 +408,8 @@ registerTool("add_row", async (args, tenantId) => {
   return await insertRow({
     collectionId,
     data: (args.data as Record<string, unknown>) ?? {},
-    createdBy: (args.created_by as string) ?? undefined,
+    createdBy: ctx.currentUser?.id ?? "",
+    createdByName: ctx.currentUser?.name ?? "",
   });
 });
 
@@ -444,8 +445,13 @@ registerTool("list_rows", async (args, tenantId) => {
   return { rows: result.rows, total: result.total };
 });
 
-registerTool("update_row", async (args) => {
-  return await updateRow(args.row_id as string, (args.data as Record<string, unknown>) ?? {});
+registerTool("update_row", async (args, _tenantId, ctx) => {
+  return await updateRow(
+    args.row_id as string,
+    (args.data as Record<string, unknown>) ?? {},
+    ctx.currentUser?.id ?? "",
+    ctx.currentUser?.name ?? "",
+  );
 });
 
 registerTool("delete_row", async (args) => {

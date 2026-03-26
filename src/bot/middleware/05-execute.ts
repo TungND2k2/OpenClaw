@@ -42,6 +42,7 @@ export async function executeMiddleware(ctx: PipelineContext): Promise<void> {
 
   console.error(`[Execute] Engine: ${ctx.engine}`);
   console.error(`[Execute] Personas: ${ctx.personas.length} (${ctx.personas.map(p => p.name).join(", ")})`);
+  await ctx.onProgress?.(`🤖 Commander đang suy nghĩ...`);
   console.error(`[Execute] History: ${ctx.conversationHistory.length} → ${effectiveHistory.length} messages${managed.truncated ? " (truncated)" : ""}`);
   console.error(`[Execute] Tokens: ~${managed.totalTokens} (prompt: ${effectivePrompt.length} chars)`);
 

@@ -327,11 +327,19 @@ async function handleJob(job: QueueJob): Promise<void> {
 
   // ── Send progress message immediately ──
   const tk = job.botToken;
-  const progressMsgId = await sendTelegramMessage(job.chatId, "⏳ Đang xử lý...", tk);
+  const aiCfg = (tenant?.aiConfig ?? {}) as Record<string, unknown>;
+  const thinkingMode = aiCfg.thinking === true;
+  const progressMsgId = await sendTelegramMessage(job.chatId, thinkingMode ? "💭 Thinking..." : "⏳ Đang xử lý...", tk);
 
-  // Progress callback
+  // Thinking log — accumulate steps, edit message with full log
+  const thinkingSteps: string[] = [];
   const onProgress = async (stage: string) => {
-    if (progressMsgId) {
+    if (!progressMsgId) return;
+    if (thinkingMode) {
+      thinkingSteps.push(stage);
+      const display = thinkingSteps.map(s => `💭 ${s}`).join("\n");
+      await editTelegramMessage(job.chatId, progressMsgId, display, tk);
+    } else {
       await editTelegramMessage(job.chatId, progressMsgId, stage, tk);
     }
   };

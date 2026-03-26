@@ -16,7 +16,9 @@ export async function contextMiddleware(ctx: PipelineContext): Promise<void> {
     summary = await buildResourceSummary(ctx.tenantId);
   }
   const resourceContext = formatSummaryForPrompt(summary);
-  console.error(`[Context] Resources: ${summary.forms.length} forms, ${summary.collections.length} collections, ${summary.filesCount} files`);
+  const resLog = `${summary.forms.length} forms, ${summary.collections.length} collections, ${summary.filesCount} files`;
+  console.error(`[Context] Resources: ${resLog}`);
+  await ctx.onProgress?.(`📋 Context: ${resLog}`);
 
   // ── File list (for file IDs in prompt) ────────────────
   const uploadedFiles = await listFiles(ctx.tenantId, 20);
