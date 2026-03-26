@@ -167,9 +167,31 @@ export async function startDashboardAPI(port = 3102) {
     } catch { res.status(404).send("Not found"); }
   });
 
-  app.listen(port, "0.0.0.0", () => {
+  const server = app.listen(port, "0.0.0.0", () => {
     console.error(`[Dashboard API] http://0.0.0.0:${port}`);
   });
+
+  // ── WebSocket for real-time logs ──────────────────────
+  const { WebSocketServer } = await import("ws");
+  const wss = new WebSocketServer({ server, path: "/ws/logs" });
+
+  // Intercept console.error to stream logs
+  const originalStderr = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: any, ...args: any[]) => {
+    const text = typeof chunk === "string" ? chunk : chunk.toString();
+    // Broadcast to all connected clients
+    for (const client of wss.clients) {
+      if (client.readyState === 1) { // OPEN
+        client.send(JSON.stringify({ type: "log", text: text.trimEnd(), ts: Date.now() }));
+      }
+    }
+    return originalStderr(chunk, ...args);
+  }) as any;
+
+  wss.on("connection", (ws) => {
+    ws.send(JSON.stringify({ type: "connected", text: "🟢 Live log stream connected", ts: Date.now() }));
+  });
+  console.error(`[Dashboard API] WebSocket logs: ws://0.0.0.0:${port}/ws/logs`);
 
   return app;
 }

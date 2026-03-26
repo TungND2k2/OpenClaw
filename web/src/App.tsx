@@ -120,6 +120,9 @@ function App() {
           </div>
         )}
 
+        {/* Live Logs */}
+        <LiveLogs />
+
         {bot && tab === "collections" && data.length > 0 && (
           <div className="space-y-3">
             {data.map((col: any) => <CollectionRows key={col.id} col={col} />)}
@@ -170,5 +173,68 @@ function CollectionRows({ col }: { col: any }) {
   );
 }
 
-const API_URL = API;
+function LiveLogs() {
+  const [logs, setLogs] = useState<{ text: string; ts: number }[]>([]);
+  const [connected, setConnected] = useState(false);
+  const logsEndRef = { current: null as HTMLDivElement | null };
+
+  useEffect(() => {
+    const wsUrl = API.replace("http", "ws").replace("/api", "") + "/ws/logs";
+    let ws: WebSocket;
+    const connect = () => {
+      ws = new WebSocket(wsUrl);
+      ws.onopen = () => setConnected(true);
+      ws.onclose = () => { setConnected(false); setTimeout(connect, 3000); };
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        setLogs(prev => [...prev.slice(-200), msg]);
+      };
+    };
+    connect();
+    return () => ws?.close();
+  }, []);
+
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logs]);
+
+  const colorize = (text: string) => {
+    if (text.includes("[Pipeline]")) return "text-blue-400";
+    if (text.includes("[Agent:")) return "text-purple-400";
+    if (text.includes("[Execute]")) return "text-yellow-400";
+    if (text.includes("[Knowledge]")) return "text-emerald-400";
+    if (text.includes("[Context]")) return "text-cyan-400";
+    if (text.includes("[Queue]")) return "text-orange-400";
+    if (text.includes("[Bot:")) return "text-pink-400";
+    if (text.includes("Error") || text.includes("error")) return "text-red-400";
+    if (text.includes("✓") || text.includes("✅")) return "text-green-400";
+    return "text-gray-400";
+  };
+
+  return (
+    <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+      <div className="px-4 py-3 bg-gray-800/50 flex items-center justify-between border-b border-gray-800">
+        <div className="flex items-center gap-2">
+          <span className={`w-2 h-2 rounded-full ${connected ? "bg-green-400 animate-pulse" : "bg-red-400"}`} />
+          <span className="text-sm font-semibold">Live Logs</span>
+        </div>
+        <div className="flex gap-2">
+          <span className="text-xs text-gray-500">{logs.length} entries</span>
+          <button onClick={() => setLogs([])} className="text-xs text-gray-500 hover:text-gray-300">Clear</button>
+        </div>
+      </div>
+      <div className="h-96 overflow-y-auto p-3 font-mono text-xs space-y-0.5 bg-gray-950">
+        {logs.length === 0 && <div className="text-gray-600 text-center py-8">Waiting for logs...</div>}
+        {logs.map((log, i) => (
+          <div key={i} className={`leading-relaxed ${colorize(log.text)}`}>
+            <span className="text-gray-700 mr-2">{new Date(log.ts).toLocaleTimeString()}</span>
+            {log.text}
+          </div>
+        ))}
+        <div ref={(el) => { logsEndRef.current = el; }} />
+      </div>
+    </div>
+  );
+}
+
 export default App;
