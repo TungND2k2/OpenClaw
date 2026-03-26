@@ -131,6 +131,10 @@ export async function processWithCommander(input: {
   };
 
   try {
+    // ── Log user message ──────────────────────────────────
+    const { botLog } = await import("../modules/logs/bot-logger.js");
+    await botLog({ tenantId: input.tenantId, tenantName: input.tenantName, userId: input.userId, userName: input.userName, type: "user_message", content: input.userMessage });
+
     // ── Run middleware pipeline ─────────────────────────────
     for (const mw of middlewares) {
       const mwName = mw.name || "unknown";
@@ -161,6 +165,15 @@ export async function processWithCommander(input: {
 
     const elapsed = Date.now() - startTime;
     console.error(`[Pipeline] ─── END (${elapsed}ms, ${ctx.toolCalls.length} tools) ────────────`);
+
+    // ── Log bot response + tools ──────────────────────────
+    const { botLog: botLog2 } = await import("../modules/logs/bot-logger.js");
+    // Log each tool call
+    for (const tc of ctx.toolCalls) {
+      await botLog2({ tenantId: input.tenantId, tenantName: input.tenantName, type: "tool_call", content: `${tc.tool}(${JSON.stringify(tc.args).substring(0, 200)})`, metadata: { tool: tc.tool, args: tc.args, result: JSON.stringify(tc.result).substring(0, 500) } });
+    }
+    // Log bot response
+    await botLog2({ tenantId: input.tenantId, tenantName: input.tenantName, userId: input.userId, userName: input.userName, type: "bot_response", content: ctx.text, metadata: { elapsed, toolCount: ctx.toolCalls.length, engine: ctx.engine } });
 
     return { text: ctx.text, files: ctx.files, personaMessages: ctx.personaMessages };
 

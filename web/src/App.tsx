@@ -174,10 +174,20 @@ function CollectionRows({ col }: { col: any }) {
 }
 
 function LiveLogs() {
-  const [logs, setLogs] = useState<{ text: string; ts: number }[]>([]);
+  const [logs, setLogs] = useState<{ type: string; content: string; tenant_name?: string; user_name?: string; created_at: number; metadata?: any }[]>([]);
   const [connected, setConnected] = useState(false);
+  const [filter, setFilter] = useState("all");
   const logsEndRef = { current: null as HTMLDivElement | null };
 
+  // Load persistent logs from DB on mount
+  useEffect(() => {
+    fetch(`${API}/logs?limit=100`).then(r => r.json()).then((rows: any[]) => {
+      const sorted = rows.sort((a: any, b: any) => a.created_at - b.created_at);
+      setLogs(sorted);
+    }).catch(() => {});
+  }, []);
+
+  // Live stream via WebSocket
   useEffect(() => {
     const wsUrl = API.replace("http", "ws").replace("/api", "") + "/ws/logs";
     let ws: WebSocket;
@@ -187,7 +197,10 @@ function LiveLogs() {
       ws.onclose = () => { setConnected(false); setTimeout(connect, 3000); };
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
-        setLogs(prev => [...prev.slice(-200), msg]);
+        if (msg.type === "log") {
+          // System log — show in raw format
+          setLogs(prev => [...prev.slice(-300), { type: "system", content: msg.text, created_at: msg.ts }]);
+        }
       };
     };
     connect();
@@ -198,39 +211,63 @@ function LiveLogs() {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
 
-  const colorize = (text: string) => {
-    if (text.includes("[Pipeline]")) return "text-blue-400";
-    if (text.includes("[Agent:")) return "text-purple-400";
-    if (text.includes("[Execute]")) return "text-yellow-400";
-    if (text.includes("[Knowledge]")) return "text-emerald-400";
-    if (text.includes("[Context]")) return "text-cyan-400";
-    if (text.includes("[Queue]")) return "text-orange-400";
-    if (text.includes("[Bot:")) return "text-pink-400";
-    if (text.includes("Error") || text.includes("error")) return "text-red-400";
-    if (text.includes("✓") || text.includes("✅")) return "text-green-400";
-    return "text-gray-400";
+  const typeStyles: Record<string, { icon: string; color: string }> = {
+    user_message: { icon: "👤", color: "text-blue-300" },
+    bot_response: { icon: "🤖", color: "text-emerald-300" },
+    thinking: { icon: "💭", color: "text-purple-300" },
+    tool_call: { icon: "🔧", color: "text-yellow-300" },
+    tool_result: { icon: "📦", color: "text-orange-300" },
+    knowledge_match: { icon: "🧠", color: "text-cyan-300" },
+    persona: { icon: "🎭", color: "text-pink-300" },
+    error: { icon: "❌", color: "text-red-400" },
+    system: { icon: "⚙️", color: "text-gray-500" },
   };
+
+  const filtered = filter === "all" ? logs : logs.filter(l => l.type === filter);
+  const types = ["all", "user_message", "bot_response", "tool_call", "system", "error"];
 
   return (
     <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
       <div className="px-4 py-3 bg-gray-800/50 flex items-center justify-between border-b border-gray-800">
         <div className="flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${connected ? "bg-green-400 animate-pulse" : "bg-red-400"}`} />
-          <span className="text-sm font-semibold">Live Logs</span>
+          <span className="text-sm font-semibold">Bot Activity Log</span>
         </div>
-        <div className="flex gap-2">
-          <span className="text-xs text-gray-500">{logs.length} entries</span>
-          <button onClick={() => setLogs([])} className="text-xs text-gray-500 hover:text-gray-300">Clear</button>
+        <div className="flex gap-2 items-center">
+          {types.map(t => (
+            <button key={t} onClick={() => setFilter(t)}
+              className={`text-xs px-2 py-0.5 rounded ${filter === t ? "bg-gray-700 text-white" : "text-gray-500 hover:text-gray-300"}`}>
+              {t === "all" ? "All" : (typeStyles[t]?.icon ?? "") + " " + t.replace("_", " ")}
+            </button>
+          ))}
+          <span className="text-xs text-gray-600">|</span>
+          <span className="text-xs text-gray-500">{filtered.length}</span>
         </div>
       </div>
-      <div className="h-96 overflow-y-auto p-3 font-mono text-xs space-y-0.5 bg-gray-950">
-        {logs.length === 0 && <div className="text-gray-600 text-center py-8">Waiting for logs...</div>}
-        {logs.map((log, i) => (
-          <div key={i} className={`leading-relaxed ${colorize(log.text)}`}>
-            <span className="text-gray-700 mr-2">{new Date(log.ts).toLocaleTimeString()}</span>
-            {log.text}
-          </div>
-        ))}
+      <div className="h-[500px] overflow-y-auto p-3 text-sm space-y-1 bg-gray-950">
+        {filtered.length === 0 && <div className="text-gray-600 text-center py-8">No logs yet — nhắn bot để thấy logs</div>}
+        {filtered.map((log, i) => {
+          const style = typeStyles[log.type] ?? { icon: "📝", color: "text-gray-400" };
+          const time = new Date(log.created_at).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+          return (
+            <div key={i} className={`${style.color} py-1 ${log.type === "bot_response" ? "bg-gray-900/50 px-3 rounded-lg border-l-2 border-emerald-800 ml-4" : ""} ${log.type === "user_message" ? "border-l-2 border-blue-800 pl-3" : ""}`}>
+              <div className="flex items-start gap-2">
+                <span className="text-gray-600 font-mono text-xs shrink-0 mt-0.5">{time}</span>
+                <span className="shrink-0">{style.icon}</span>
+                <div className="flex-1 min-w-0">
+                  {log.tenant_name && <span className="text-xs text-gray-600 mr-1">[{log.tenant_name}]</span>}
+                  {log.user_name && log.type === "user_message" && <span className="font-semibold mr-1">{log.user_name}:</span>}
+                  <span className={`${log.type === "bot_response" ? "whitespace-pre-wrap" : ""}`}>
+                    {log.content.substring(0, 500)}
+                    {log.content.length > 500 && <span className="text-gray-600">...</span>}
+                  </span>
+                  {log.metadata?.elapsed && <span className="text-xs text-gray-600 ml-2">({log.metadata.elapsed}ms)</span>}
+                  {log.metadata?.tool && <span className="text-xs bg-yellow-500/10 text-yellow-400 px-1.5 rounded ml-2">{log.metadata.tool}</span>}
+                </div>
+              </div>
+            </div>
+          );
+        })}
         <div ref={(el) => { logsEndRef.current = el; }} />
       </div>
     </div>

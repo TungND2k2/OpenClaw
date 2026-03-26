@@ -160,6 +160,16 @@ export async function startDashboardAPI(port = 3102) {
     res.json(rows);
   });
 
+  // ── Bot Logs (persistent) ────────────────────────────
+  app.get("/api/logs", async (req, res) => {
+    const { getLogs } = await import("../modules/logs/bot-logger.js");
+    const tenantId = req.query.tenant as string | undefined;
+    const limit = parseInt(req.query.limit as string) || 200;
+    const since = parseInt(req.query.since as string) || undefined;
+    const rows = await getLogs(tenantId || undefined, limit, since);
+    res.json(rows);
+  });
+
   // SPA fallback (Express 5 syntax)
   app.use((_req, res) => {
     try {
