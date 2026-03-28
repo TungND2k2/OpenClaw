@@ -780,10 +780,10 @@ async function handleFileUpload(
       const toolCtx = { sessionId: "", currentUser: { id: userId, name: userName, role: "user" } };
       if (isImage) {
         const r = await executeTool("analyze_image", { file_id: result.id }, tenantId, toolCtx);
-        analysis = typeof r === "string" ? r : JSON.stringify(r).substring(0, 2000);
+        analysis = typeof r === "string" ? r : (r as any)?.content ?? (r as any)?.description ?? JSON.stringify(r).substring(0, 2000);
       } else {
         const r = await executeTool("read_file_content", { file_id: result.id }, tenantId, toolCtx);
-        analysis = typeof r === "string" ? r : JSON.stringify(r).substring(0, 2000);
+        analysis = typeof r === "string" ? r : (r as any)?.content ?? JSON.stringify(r).substring(0, 2000);
       }
       console.error(`[Bot] Auto-analyzed ${fileName}: ${analysis.length} chars`);
     } catch (e: any) {
