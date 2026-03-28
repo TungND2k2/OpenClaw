@@ -778,13 +778,23 @@ async function handleFileUpload(
     try {
       const { executeTool } = await import("./tool-registry.js");
       const toolCtx = { sessionId: "", currentUser: { id: userId, name: userName, role: "user" } };
+      // Step 1: Extract raw content
+      let rawContent = "";
       if (isImage) {
         const r = await executeTool("analyze_image", { file_id: result.id }, tenantId, toolCtx);
-        analysis = typeof r === "string" ? r : (r as any)?.content ?? (r as any)?.description ?? JSON.stringify(r).substring(0, 2000);
+        rawContent = typeof r === "string" ? r : (r as any)?.content ?? (r as any)?.description ?? JSON.stringify(r);
       } else {
         const r = await executeTool("read_file_content", { file_id: result.id }, tenantId, toolCtx);
-        analysis = typeof r === "string" ? r : (r as any)?.content ?? JSON.stringify(r).substring(0, 2000);
+        rawContent = typeof r === "string" ? r : (r as any)?.content ?? JSON.stringify(r);
       }
+
+      // Step 2: LLM analyze (fast-api, cheap)
+      const { callFastAPI } = await import("../modules/agents/agent-runner.js");
+      analysis = await callFastAPI(
+        `Phân tích chi tiết file "${fileName}" dưới đây. Trích xuất TẤT CẢ thông tin quan trọng: tên, số lượng, giá, size, mô tả sản phẩm, thông tin khách hàng, điều khoản. Trình bày rõ ràng, đầy đủ, KHÔNG bỏ sót.\n\nNội dung file:\n${rawContent.substring(0, 4000)}`,
+        "Bạn là trợ lý phân tích tài liệu. Trả lời bằng tiếng Việt, đầy đủ chi tiết.",
+        [],
+      );
       console.error(`[Bot] Auto-analyzed ${fileName}: ${analysis.length} chars`);
     } catch (e: any) {
       console.error(`[Bot] Auto-analyze failed: ${e.message}`);
@@ -802,14 +812,14 @@ async function handleFileUpload(
       uploadedAt: Date.now(),
     });
 
-    // Show analysis preview to user
-    const preview = analysis.substring(0, 300).replace(/</g, "&lt;");
+    // Show full analysis to user
+    const safeAnalysis = analysis.replace(/</g, "&lt;").replace(/>/g, "&gt;");
     await sendTelegramMessage(chatId,
       `✅ <b>File đã lưu + phân tích</b>\n` +
       `📎 ${fileName} (${sizeStr})\n` +
-      `🔗 ID: <code>${result.id}</code>\n` +
-      `📊 <i>${preview}${analysis.length > 300 ? "..." : ""}</i>` +
-      (caption ? `\n📝 ${caption}` : ""),
+      `🔗 ID: <code>${result.id}</code>\n\n` +
+      safeAnalysis +
+      (caption ? `\n\n📝 ${caption}` : ""),
       tk,
     );
 
