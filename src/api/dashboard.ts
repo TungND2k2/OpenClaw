@@ -13,6 +13,7 @@ import {
   agentTemplates,
 } from "../db/schema.js";
 import { eq, sql, desc } from "drizzle-orm";
+import { newId } from "../utils/id.js";
 
 export async function startDashboardAPI(port = 3102) {
   const app = express();
@@ -168,6 +169,137 @@ export async function startDashboardAPI(port = 3102) {
     const since = parseInt(req.query.since as string) || undefined;
     const rows = await getLogs(tenantId || undefined, limit, since);
     res.json(rows);
+  });
+
+  // ── CRUD: Collections ────────────────────────────────────
+  app.post("/api/bots/:tenantId/collections", async (req, res) => {
+    const { name, description, fields } = req.body;
+    const now = Date.now();
+    const slug = name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+    const id = newId();
+    await db.insert(collections).values({ id, tenantId: req.params.tenantId, name, slug, description, fields: fields ?? [], createdAt: now, updatedAt: now });
+    res.json({ id });
+  });
+
+  app.put("/api/collections/:id", async (req, res) => {
+    const { name, description, fields } = req.body;
+    await db.update(collections).set({ name, description, fields, updatedAt: Date.now() }).where(eq(collections.id, req.params.id));
+    res.json({ ok: true });
+  });
+
+  app.delete("/api/collections/:id", async (req, res) => {
+    await db.delete(collectionRows).where(eq(collectionRows.collectionId, req.params.id));
+    await db.delete(collections).where(eq(collections.id, req.params.id));
+    res.json({ ok: true });
+  });
+
+  app.post("/api/collections/:collectionId/rows", async (req, res) => {
+    const now = Date.now();
+    const id = newId();
+    await db.insert(collectionRows).values({ id, collectionId: req.params.collectionId, data: req.body.data ?? req.body, createdAt: now, updatedAt: now });
+    res.json({ id });
+  });
+
+  app.put("/api/collection-rows/:id", async (req, res) => {
+    await db.update(collectionRows).set({ data: req.body.data ?? req.body, updatedAt: Date.now() }).where(eq(collectionRows.id, req.params.id));
+    res.json({ ok: true });
+  });
+
+  app.delete("/api/collection-rows/:id", async (req, res) => {
+    await db.delete(collectionRows).where(eq(collectionRows.id, req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ── CRUD: Forms ───────────────────────────────────────────
+  app.post("/api/bots/:tenantId/forms", async (req, res) => {
+    const { name, schema, uiHints, status } = req.body;
+    const now = Date.now();
+    const id = newId();
+    await db.insert(formTemplates).values({ id, tenantId: req.params.tenantId, name, schema: schema ?? {}, uiHints, status: status ?? "active", createdAt: now, updatedAt: now });
+    res.json({ id });
+  });
+
+  app.put("/api/forms/:id", async (req, res) => {
+    const { name, schema, uiHints, status } = req.body;
+    await db.update(formTemplates).set({ name, schema, uiHints, status, updatedAt: Date.now() }).where(eq(formTemplates.id, req.params.id));
+    res.json({ ok: true });
+  });
+
+  app.delete("/api/forms/:id", async (req, res) => {
+    await db.delete(formTemplates).where(eq(formTemplates.id, req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ── CRUD: Workflows ───────────────────────────────────────
+  app.post("/api/bots/:tenantId/workflows", async (req, res) => {
+    const { name, description, domain, stages, status } = req.body;
+    const now = Date.now();
+    const id = newId();
+    await db.insert(workflowTemplates).values({ id, tenantId: req.params.tenantId, name, description, domain, stages: stages ?? [], status: status ?? "draft", createdAt: now, updatedAt: now });
+    res.json({ id });
+  });
+
+  app.put("/api/workflows/:id", async (req, res) => {
+    const { name, description, domain, stages, status } = req.body;
+    await db.update(workflowTemplates).set({ name, description, domain, stages, status, updatedAt: Date.now() }).where(eq(workflowTemplates.id, req.params.id));
+    res.json({ ok: true });
+  });
+
+  app.delete("/api/workflows/:id", async (req, res) => {
+    await db.delete(workflowTemplates).where(eq(workflowTemplates.id, req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ── CRUD: Rules ───────────────────────────────────────────
+  app.post("/api/bots/:tenantId/rules", async (req, res) => {
+    const { name, description, domain, ruleType, conditions, actions, priority, status } = req.body;
+    const now = Date.now();
+    const id = newId();
+    await db.insert(businessRules).values({ id, tenantId: req.params.tenantId, name, description, domain, ruleType: ruleType ?? "condition", conditions: conditions ?? [], actions: actions ?? [], priority: priority ?? 0, status: status ?? "active", createdAt: now, updatedAt: now });
+    res.json({ id });
+  });
+
+  app.put("/api/rules/:id", async (req, res) => {
+    const { name, description, domain, ruleType, conditions, actions, priority, status } = req.body;
+    await db.update(businessRules).set({ name, description, domain, ruleType, conditions, actions, priority, status, updatedAt: Date.now() }).where(eq(businessRules.id, req.params.id));
+    res.json({ ok: true });
+  });
+
+  app.delete("/api/rules/:id", async (req, res) => {
+    await db.delete(businessRules).where(eq(businessRules.id, req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ── CRUD: Agent Templates ─────────────────────────────────
+  app.post("/api/bots/:tenantId/agents", async (req, res) => {
+    const { name, role, systemPrompt, capabilities, tools, engine, status } = req.body;
+    const now = Date.now();
+    const id = newId();
+    await db.insert(agentTemplates).values({ id, tenantId: req.params.tenantId, name, role: role ?? "assistant", systemPrompt: systemPrompt ?? "", capabilities: capabilities ?? [], tools: tools ?? [], engine: engine ?? "fast-api", status: status ?? "active", createdAt: now, updatedAt: now });
+    res.json({ id });
+  });
+
+  app.put("/api/agents/:id", async (req, res) => {
+    const { name, role, systemPrompt, capabilities, tools, engine, status } = req.body;
+    await db.update(agentTemplates).set({ name, role, systemPrompt, capabilities, tools, engine, status, updatedAt: Date.now() }).where(eq(agentTemplates.id, req.params.id));
+    res.json({ ok: true });
+  });
+
+  app.delete("/api/agents/:id", async (req, res) => {
+    await db.delete(agentTemplates).where(eq(agentTemplates.id, req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ── Delete: Knowledge ─────────────────────────────────────
+  app.delete("/api/knowledge/:id", async (req, res) => {
+    await db.delete(knowledgeEntries).where(eq(knowledgeEntries.id, req.params.id));
+    res.json({ ok: true });
+  });
+
+  // ── Delete: Cron ──────────────────────────────────────────
+  app.delete("/api/crons/:id", async (req, res) => {
+    await db.execute(sql`DELETE FROM scheduled_tasks WHERE id = ${req.params.id}`);
+    res.json({ ok: true });
   });
 
   // SPA fallback (Express 5 syntax)
