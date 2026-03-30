@@ -788,11 +788,19 @@ async function handleFileUpload(
         rawContent = typeof r === "string" ? r : (r as any)?.content ?? JSON.stringify(r);
       }
 
-      // Step 2: LLM analyze (fast-api, cheap)
+      // Step 2: LLM analyze — send full content (up to 12K chars)
       const { callFastAPI } = await import("../modules/agents/agent-runner.js");
       analysis = await callFastAPI(
-        `Phân tích chi tiết file "${fileName}" dưới đây. Trích xuất TẤT CẢ thông tin quan trọng: tên, số lượng, giá, size, mô tả sản phẩm, thông tin khách hàng, điều khoản. Trình bày rõ ràng, đầy đủ, KHÔNG bỏ sót.\n\nNội dung file:\n${rawContent.substring(0, 4000)}`,
-        "Bạn là trợ lý phân tích tài liệu. Trả lời bằng tiếng Việt, đầy đủ chi tiết.",
+        `Phân tích chi tiết file "${fileName}". Trích xuất TẤT CẢ thông tin:\n` +
+        `- Thông tin khách hàng (tên, SĐT, email, địa chỉ)\n` +
+        `- Danh sách sản phẩm (tên, mô tả, size, số lượng, đơn giá, thành tiền)\n` +
+        `- Tổng giá trị, đặt cọc, còn nợ, phí ship\n` +
+        `- Điều khoản thanh toán, thời gian giao hàng\n` +
+        `- Thông tin ngân hàng nếu có\n` +
+        `- Bất kỳ thông tin quan trọng nào khác\n\n` +
+        `Trình bày đầy đủ, rõ ràng, KHÔNG bỏ sót, KHÔNG tóm tắt quá ngắn.\n\n` +
+        `NỘI DUNG FILE:\n${rawContent.substring(0, 12000)}`,
+        "Bạn là trợ lý phân tích tài liệu chuyên nghiệp. Trả lời bằng tiếng Việt. Liệt kê đầy đủ mọi chi tiết từ file.",
         [],
       );
       console.error(`[Bot] Auto-analyzed ${fileName}: ${analysis.length} chars`);
