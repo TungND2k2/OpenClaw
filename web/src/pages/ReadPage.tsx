@@ -24,6 +24,7 @@ export function ReadPage({ title, icon, description, endpoint, columns, deleteEn
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
   const [deleting, setDeleting] = useState(false);
   const [search, setSearch] = useState("");
+  const [detail, setDetail] = useState<any>(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -93,7 +94,7 @@ export function ReadPage({ title, icon, description, endpoint, columns, deleteEn
               </thead>
               <tbody className="divide-y divide-[#21262d]">
                 {filtered.map((row, i) => (
-                  <tr key={row.id ?? i} className="hover:bg-[#1c2128] transition-colors group">
+                  <tr key={row.id ?? i} className="hover:bg-[#1c2128] transition-colors group cursor-pointer" onClick={() => setDetail(row)}>
                     {columns.map(col => (
                       <td key={col.key} className="px-4 py-3 text-[#e6edf3]">
                         {col.render
@@ -126,6 +127,35 @@ export function ReadPage({ title, icon, description, endpoint, columns, deleteEn
           </div>
         )}
       </div>
+
+      {/* Detail Panel */}
+      {detail && (
+        <div className="fixed inset-0 z-50 flex justify-end" onClick={() => setDetail(null)}>
+          <div className="absolute inset-0 bg-black/50" />
+          <div className="relative w-full max-w-lg bg-[#161b22] border-l border-[#21262d] overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="sticky top-0 bg-[#161b22] border-b border-[#21262d] px-5 py-4 flex items-center justify-between z-10">
+              <h3 className="text-sm font-semibold text-[#e6edf3]">{icon} Detail</h3>
+              <button onClick={() => setDetail(null)} className="text-[#8b949e] hover:text-[#e6edf3] text-lg">✕</button>
+            </div>
+            <div className="p-5 space-y-4">
+              {Object.entries(detail).map(([key, value]) => (
+                <div key={key} className="border-b border-[#21262d] pb-3">
+                  <div className="text-xs font-semibold text-[#8b949e] uppercase tracking-wider mb-1">{key}</div>
+                  {typeof value === "object" && value !== null ? (
+                    <pre className="text-xs text-[#79c0ff] bg-[#0d1117] rounded-lg p-3 overflow-x-auto font-mono whitespace-pre-wrap">
+                      {JSON.stringify(value, null, 2)}
+                    </pre>
+                  ) : (
+                    <div className="text-sm text-[#e6edf3] whitespace-pre-wrap break-words">
+                      {String(value ?? "—")}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {deleteEndpoint && (
         <Modal
