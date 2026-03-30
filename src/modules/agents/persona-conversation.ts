@@ -9,7 +9,7 @@
 import { AgentRunner, type LLMEngine } from "./agent-runner.js";
 import { getDb } from "../../db/connection.js";
 import { agentTemplates } from "../../db/schema.js";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 
 export interface Persona {
   name: string;
@@ -29,17 +29,18 @@ export interface PersonaMessage {
 export async function getPersonas(tenantId?: string): Promise<Persona[]> {
   const db = getDb();
 
-  // Only get personas for this tenant (or global ones without tenant_id)
+  if (!tenantId) return [];
+
   const templates = await db.select().from(agentTemplates)
-    .where(eq(agentTemplates.status, "active"));
+    .where(
+      and(
+        eq(agentTemplates.status, "active"),
+        eq((agentTemplates as any).tenantId, tenantId),
+      )
+    );
 
   return templates
     .filter(t => t.role !== "commander")
-    .filter(t => {
-      const tid = (t as any).tenantId;
-      if (!tid) return false; // Skip global templates (Commander, General Worker)
-      return tid === tenantId;
-    })
     .map(t => ({
       name: t.name,
       emoji: (t.capabilities as any)?.emoji ?? "🤖",

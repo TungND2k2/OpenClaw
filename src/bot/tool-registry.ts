@@ -5,7 +5,7 @@
 import { getDb } from "../db/connection.js";
 import { eq, and, sql } from "drizzle-orm";
 import { notebookWrite } from "../modules/notebooks/notebook.service.js";
-import { storeKnowledge } from "../modules/knowledge/knowledge.service.js";
+import { storeKnowledge, retrieveKnowledge } from "../modules/knowledge/knowledge.service.js";
 import { getDashboard } from "../modules/monitoring/monitor.service.js";
 import { startWorkflow } from "../modules/workflows/workflow-engine.service.js";
 import { getFile, listFiles, readFileContent } from "../modules/storage/s3.service.js";
@@ -126,12 +126,45 @@ registerTool("start_workflow_instance", async (args, tenantId) => {
 
 // ── Knowledge Tools ────────────────────────────────────────
 
+registerTool("save_knowledge", async (args, tenantId) => {
+  const commander = getCommander();
+  const entry = await storeKnowledge({
+    type: (args.type as any) ?? "fact",
+    title: args.title as string,
+    content: args.content as string,
+    domain: (args.domain as string) ?? "general",
+    tags: (args.tags as string[]) ?? [],
+    sourceAgentId: commander?.agent.id ?? "system",
+    scope: "global",
+    tenantId,
+  });
+  return { saved: true, id: entry.id, title: entry.title };
+});
+
+registerTool("search_knowledge", async (args, tenantId) => {
+  const results = await retrieveKnowledge({
+    tags: (args.tags as string[]) ?? [],
+    capabilities: [],
+    domain: (args.domain as string) ?? "general",
+    scope: ["global"],
+    limit: (args.limit as number) ?? 5,
+    tenantId,
+  });
+  return results.map(r => ({
+    id: r.id, type: r.type, title: r.title,
+    content: r.content.substring(0, 500),
+    domain: r.domain, tags: r.tags,
+    matchScore: r.matchScore,
+  }));
+});
+
 registerTool("save_tutorial", async (args, tenantId) => {
   const commander = getCommander();
   await storeKnowledge({
     type: "procedure", title: args.title as string, content: args.content as string,
     domain: (args.domain as string) ?? "general", tags: ["tutorial", (args.target_role as string) ?? "general"],
     sourceAgentId: commander?.agent.id ?? "system", scope: `domain:${(args.target_role as string) ?? "general"}`,
+    tenantId,
   });
   await notebookWrite({
     namespace: `tutorial:${tenantId}`, key: (args.title as string).toLowerCase().replace(/\s+/g, "-"),

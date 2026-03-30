@@ -316,7 +316,8 @@ export function getRunnerByAgentId(agentId: string): AgentRunner | null { return
 export function getToolDefinitions(): ToolDefinition[] { return agentPool.getToolDefinitions(); }
 
 // Backward compat: old init function redirects to new pool
-export async function initAgentPool(config: { workerCount?: number; toolExecutor: any }): Promise<{ commander: AgentRunner; workers: AgentRunner[] }> {
+// Note: workerCount is ignored — worker count is controlled by autoSpawnCount in agent templates.
+export async function initAgentPool(config: { toolExecutor: any }): Promise<{ commander: AgentRunner; workers: AgentRunner[] }> {
   await agentPool.init({ toolExecutor: config.toolExecutor });
   return {
     commander: agentPool.getCommander()!,

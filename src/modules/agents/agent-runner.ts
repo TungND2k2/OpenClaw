@@ -1,17 +1,17 @@
 /**
- * AgentRunner — Claude Agent SDK with persistent sessions.
+ * AgentRunner — Anthropic Messages API with native tool calling.
  *
- * SDK sessions = context in memory (fast, no DB query per message)
- * PostgreSQL = backup (summary, logs, data)
+ * Engines:
+ *   claude-sdk / claude-cli → Anthropic Messages API, tools: parameter, tool_use loop
+ *   fast-api               → OpenAI-compatible API, text-parsed tool_calls blocks
  *
- * Flow:
- *   1. Resume SDK session (if exists) or create new (inject summary from DB)
- *   2. SDK query (native tools, native context management)
- *   3. Save summary to DB periodically (for backup on restart)
+ * Context is managed by the caller (pipeline.ts) via conversationHistory.
+ * dbSummary injected into system prompt for context recovery on first call.
  */
 
 import type { InferSelectModel } from "drizzle-orm";
 import type { agents } from "../../db/schemas/agents.js";
+import Anthropic from "@anthropic-ai/sdk";
 
 export type AgentRecord = InferSelectModel<typeof agents>;
 export type LLMEngine = "fast-api" | "claude-sdk" | "claude-cli";
@@ -31,22 +31,6 @@ export interface ToolResult {
 export interface ThinkResult {
   text: string;
   toolCalls: ToolResult[];
-  sdkSessionId?: string;
-}
-
-// ── SDK Session Map — per user per tenant ──────────────
-const sessionMap = new Map<string, string>(); // key: tenantId:userId → SDK sessionId
-
-export function getSessionKey(tenantId: string, userId: string): string {
-  return `${tenantId}:${userId}`;
-}
-
-export function getSDKSessionId(tenantId: string, userId: string): string | undefined {
-  return sessionMap.get(getSessionKey(tenantId, userId));
-}
-
-export function setSDKSessionId(tenantId: string, userId: string, sessionId: string): void {
-  sessionMap.set(getSessionKey(tenantId, userId), sessionId);
 }
 
 // ── AgentRunner ────────────────────────────────────────
@@ -67,6 +51,7 @@ export class AgentRunner {
   readonly agent: AgentRecord;
   readonly engine: LLMEngine;
   private systemPrompt: string;
+  private tools: ToolDefinition[];
   private executeTool: (tool: string, args: Record<string, unknown>) => Promise<unknown>;
   private maxToolLoops: number;
   private tenantId: string;
@@ -77,6 +62,7 @@ export class AgentRunner {
     this.agent = config.agent;
     this.engine = config.engine;
     this.systemPrompt = config.systemPrompt;
+    this.tools = config.tools ?? [];
     this.executeTool = config.executeTool;
     this.maxToolLoops = config.maxToolLoops ?? 10;
     this.tenantId = config.tenantId ?? "";
@@ -90,9 +76,9 @@ export class AgentRunner {
   ): Promise<ThinkResult> {
     if (this.engine === "claude-sdk" || this.engine === "claude-cli") {
       try {
-        return await this.callSDK(userMessage, conversationHistory);
+        return await this.callAnthropicMessages(userMessage, conversationHistory);
       } catch (err: any) {
-        console.error(`[Agent:${this.agent.name}] SDK failed: ${err.message.substring(0, 100)} → fallback fast-api`);
+        console.error(`[Agent:${this.agent.name}] Anthropic API failed: ${err.message.substring(0, 100)} → fallback fast-api`);
         return this.callFastAPIWithTools(userMessage, conversationHistory);
       }
     }
@@ -100,115 +86,86 @@ export class AgentRunner {
   }
 
   /**
-   * Claude Agent SDK with sessions.
+   * Anthropic Messages API — native tool calling via tool_use/tool_result blocks.
    */
-  private async callSDK(
+  private async callAnthropicMessages(
     userMessage: string,
     history: { role: string; content: string }[],
   ): Promise<ThinkResult> {
-    const { query } = await import("@anthropic-ai/claude-agent-sdk");
+    const { getConfig } = await import("../../config.js");
+    const cfg = getConfig();
     const prefix = `[Agent:${this.agent.name}]`;
+
+    const client = new Anthropic({ apiKey: cfg.COMMANDER_API_KEY });
+
+    // Map tool definitions to Anthropic format
+    const anthropicTools: Anthropic.Tool[] = this.tools.map(t => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.parameters as Anthropic.Tool.InputSchema,
+    }));
+
+    // Build message array from conversation history
+    const messages: Anthropic.MessageParam[] = [
+      ...history.map(m => ({ role: m.role as "user" | "assistant", content: m.content })),
+      { role: "user", content: userMessage },
+    ];
+
+    // Inject dbSummary into system prompt for context recovery
+    const systemStr = this.dbSummary
+      ? `${this.systemPrompt}\n\n[Context phiên trước]: ${this.dbSummary}`
+      : this.systemPrompt;
+
     const allToolResults: ToolResult[] = [];
-    let finalText = "";
+    console.error(`${prefix} Anthropic API calling (${this.tools.length} tools)...`);
 
-    // Check for existing SDK session
-    const existingSessionId = getSDKSessionId(this.tenantId, this.userId);
-    const isResume = !!existingSessionId;
+    for (let loop = 0; loop <= this.maxToolLoops; loop++) {
+      const response = await client.messages.create({
+        model: cfg.COMMANDER_MODEL,
+        max_tokens: 4096,
+        system: systemStr,
+        messages,
+        ...(anthropicTools.length > 0 ? { tools: anthropicTools } : {}),
+      });
 
-    // Build prompt
-    let prompt = userMessage;
-    if (!isResume && this.dbSummary) {
-      // New session — inject DB summary as context
-      prompt = `[Context từ phiên trước]: ${this.dbSummary}\n\n---\n\nUser: ${userMessage}`;
-      console.error(`${prefix} SDK new session (injected DB summary: ${this.dbSummary.length} chars)`);
-    } else if (isResume) {
-      console.error(`${prefix} SDK resume session ${existingSessionId!.substring(0, 8)}`);
-    } else {
-      console.error(`${prefix} SDK new session (no prior context)`);
-    }
+      // Add assistant turn to message history for next iteration
+      messages.push({ role: "assistant", content: response.content });
 
-    console.error(`${prefix} SDK calling...`);
-    let newSessionId: string | undefined;
-
-    for await (const msg of query({
-      prompt,
-      options: {
-        systemPrompt: this.systemPrompt,
-        allowedTools: [],
-        maxTurns: this.maxToolLoops,
-        ...(isResume ? { resume: existingSessionId } : {}),
-      },
-    })) {
-      // Capture session ID
-      if (msg.type === "system" && (msg as any).subtype === "init") {
-        newSessionId = (msg as any).session_id;
+      if (response.stop_reason !== "tool_use") {
+        const text = response.content
+          .filter((b): b is Anthropic.TextBlock => b.type === "text")
+          .map(b => b.text)
+          .join("");
+        console.error(`${prefix} done: ${allToolResults.length} tools called`);
+        return { text, toolCalls: allToolResults };
       }
 
-      // Text response
-      if (msg.type === "assistant" && (msg as any).message) {
-        for (const block of (msg as any).message.content ?? []) {
-          if (typeof block === "string") finalText += block;
-          else if (block.type === "text") finalText += block.text;
-        }
-      }
+      // Execute all tool_use blocks
+      const toolUseBlocks = response.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use");
+      const toolResultContent: Anthropic.ToolResultBlockParam[] = [];
 
-      // Result
-      if (msg.type === "result" && "result" in msg) {
-        finalText = (msg as any).result ?? finalText;
-      }
-    }
-
-    // Save session ID for next message
-    if (newSessionId) {
-      setSDKSessionId(this.tenantId, this.userId, newSessionId);
-    }
-
-    // ── Tool loop: parse → execute → query again → until no more tools ──
-    let currentText = finalText;
-    for (let loop = 0; loop < this.maxToolLoops; loop++) {
-      const toolCalls = this.parseToolCalls(currentText);
-      if (toolCalls.length === 0) break;
-
-      // Execute tools
-      for (const tc of toolCalls) {
+      for (const block of toolUseBlocks) {
+        const args = block.input as Record<string, unknown>;
+        let result: unknown;
         try {
-          const result = await this.executeTool(tc.tool, tc.args);
-          allToolResults.push({ tool: tc.tool, args: tc.args, result });
+          result = await this.executeTool(block.name, args);
+          allToolResults.push({ tool: block.name, args, result });
         } catch (err: any) {
-          allToolResults.push({ tool: tc.tool, args: tc.args, result: { error: err.message } });
+          result = { error: err.message };
+          allToolResults.push({ tool: block.name, args, result });
         }
+        toolResultContent.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: JSON.stringify(result).substring(0, 3000),
+        });
       }
 
-      // Feed tool results back to SDK
-      const toolResultText = allToolResults.slice(-toolCalls.length)
-        .map(r => `[Tool: ${r.tool}] Result:\n${JSON.stringify(r.result, null, 2).substring(0, 1000)}`)
-        .join("\n\n");
-
-      currentText = "";
-      for await (const msg of query({
-        prompt: toolResultText + "\n\nDựa trên kết quả, tiếp tục xử lý hoặc trả lời user.",
-        options: {
-          systemPrompt: this.systemPrompt,
-          allowedTools: [],
-          maxTurns: 1,
-          ...(newSessionId ? { resume: newSessionId } : {}),
-        },
-      })) {
-        if (msg.type === "assistant" && (msg as any).message) {
-          for (const block of (msg as any).message.content ?? []) {
-            if (typeof block === "string") currentText += block;
-            else if (block.type === "text") currentText += block.text;
-          }
-        }
-        if (msg.type === "result" && "result" in msg) {
-          currentText = (msg as any).result ?? currentText;
-        }
-      }
+      messages.push({ role: "user", content: toolResultContent });
     }
 
-    const cleanText = currentText.replace(/```tool_calls[\s\S]*?```/g, "").trim();
-    console.error(`${prefix} SDK done: ${allToolResults.length} tools`);
-    return { text: cleanText || finalText.replace(/```tool_calls[\s\S]*?```/g, "").trim(), toolCalls: allToolResults, sdkSessionId: newSessionId };
+    console.error(`${prefix} reached tool loop limit`);
+    return { text: "Đã đạt giới hạn xử lý.", toolCalls: allToolResults };
   }
 
   /**

@@ -1,9 +1,9 @@
 /**
  * Token Counter — estimates token count for mixed Vietnamese/English text.
- * ~3 chars per token (safe average for mixed content).
+ * ~4 chars per token (safe average for mixed content).
  */
 
-const CHARS_PER_TOKEN = 3;
+const CHARS_PER_TOKEN = 4;
 
 export function estimateTokens(text: string): number {
   if (!text) return 0;
@@ -19,6 +19,6 @@ export function estimateMessagesTokens(messages: { role: string; content: string
 }
 
 // Budget constants
-export const TOKEN_BUDGET = 8000;
-export const RESERVED_FOR_RESPONSE = 2000;
+export const TOKEN_BUDGET = 40000;
+export const RESERVED_FOR_RESPONSE = 4096;
 export const AVAILABLE_TOKENS = TOKEN_BUDGET - RESERVED_FOR_RESPONSE;

@@ -24,7 +24,6 @@ async function main() {
 
   // 3. Initialize Agent Pool (Commander + Workers in DB)
   await initAgentPool({
-    workerCount: 3,
     toolExecutor: executeTool,
   });
   console.error(`[OpenClaw] Agent pool ready`);

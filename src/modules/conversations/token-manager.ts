@@ -11,7 +11,8 @@
  *   6. Older messages (truncated first)
  *
  * Token estimation: ~4 chars = 1 token (rough but fast).
- * Claude context: ~100K tokens, but we target ~8K for speed.
+ * Claude context: ~200K tokens. We target 40K — enough for long history
+ * while remaining fast. Only truncate when genuinely near limit.
  */
 
 export interface ContextParts {
@@ -40,7 +41,7 @@ function estimateTokens(text: string): number {
  * @param parts — all context parts
  * @param maxTokens — target token budget (default 8000 for speed)
  */
-export function manageContext(parts: ContextParts, maxTokens: number = 8000): ManagedContext {
+export function manageContext(parts: ContextParts, maxTokens: number = 40000): ManagedContext {
   // Priority 1: System prompt (always included)
   const promptTokens = estimateTokens(parts.systemPrompt);
 

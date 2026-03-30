@@ -9,12 +9,14 @@
 
 import { getCommander } from "../modules/agents/agent-pool.js";
 import { heartbeat, updatePerformance } from "../modules/agents/agent.service.js";
-import { AgentRunner, type LLMEngine, getSDKSessionId } from "../modules/agents/agent-runner.js";
+import { AgentRunner, type LLMEngine } from "../modules/agents/agent-runner.js";
+import { AGENT_TOOLS } from "../modules/agents/agent-pool.js";
 import { executeTool } from "./tool-registry.js";
 import { invalidateCache } from "../modules/cache/resource-cache.js";
 import { getResourceSummary, buildResourceSummary, formatSummaryForPrompt } from "../modules/cache/resource-cache.js";
 import { buildCommanderPrompt } from "./prompt-builder.js";
 import { botLog } from "../modules/logs/bot-logger.js";
+import { retrieveKnowledge } from "../modules/knowledge/knowledge.service.js";
 import * as log from "./middleware/logger.js";
 import type { PipelineContext } from "./middleware/types.js";
 
@@ -61,11 +63,9 @@ export async function processWithCommander(input: {
     conversationHistory: input.conversationHistory, aiConfig: input.aiConfig,
     sessionId: input.sessionId ?? "", onProgress: input.onProgress,
     onPersonaMessage: input.onPersonaMessage,
-    keywords: [], knowledgeContext: "", knowledgeEntries: [], fileContext: "",
-    formContext: "", onboardingContext: "", systemPrompt: "", engine: "",
-    personas: [], currentUser: { id: input.userId, name: input.userName, role: input.userRole },
-    lastToolsCalledBySession: new Map(), commanderAgentId: commander.agent.id,
-    taskId: null, text: "", files: [], toolCalls: [], done: false,
+    knowledgeContext: "", fileContext: "", formContext: "", systemPrompt: "",
+    currentUser: { id: input.userId, name: input.userName, role: input.userRole },
+    text: "", files: [], toolCalls: [],
   };
 
   log.logStart(ctx);
@@ -94,16 +94,39 @@ export async function processWithCommander(input: {
       }
     } catch {}
 
-    const systemPrompt = buildCommanderPrompt(input.tenantName, input.userName, input.userRole, input.aiConfig)
+    // ── Engine routing ────────────────────────────────────
+    const GREETING = /^(chào|hi|hello|hey|xin chào|ok|ừ|uh|cảm ơn|thanks|bye|👋)[\s!.?]*$/i;
+    const isGreeting = input.userMessage.trim().length < 20 && GREETING.test(input.userMessage.trim());
+    const engine: LLMEngine = isGreeting ? "fast-api" : "claude-sdk";
+
+    const systemPrompt = buildCommanderPrompt(input.tenantName, input.userName, input.userRole, input.aiConfig, engine !== "fast-api")
       + (resourceContext ? `\n\nHỆ THỐNG CÓ:\n${resourceContext}` : "")
       + docsContext
       + fileContext;
 
-    // Get DB summary for session recovery
+    // Propagate to ctx so logger can read them
+    ctx.systemPrompt = systemPrompt;
+    ctx.fileContext = fileContext;
+    // ── Knowledge context (retrieve relevant entries for this message) ──
+    let knowledgeContext = "";
+    try {
+      const keywords = input.userMessage.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+      const knowledgeEntries = await retrieveKnowledge({
+        tags: keywords,
+        capabilities: [],
+        domain: "general",
+        scope: ["global"],
+        limit: 3,
+        tenantId: input.tenantId,
+      });
+      if (knowledgeEntries.length > 0 && knowledgeEntries[0].matchScore > 0.3) {
+        knowledgeContext = `\n\nKNOWLEDGE:\n${knowledgeEntries.map(k => `[${k.type}] ${k.title}: ${k.content.substring(0, 300)}`).join("\n")}`;
+      }
+    } catch {}
+
+    // Get DB summary for session recovery (inject into system prompt for new conversations)
     let dbSummary = "";
-    const existingSDKSession = getSDKSessionId(input.tenantId, input.userId);
-    if (!existingSDKSession) {
-      // No SDK session — load summary from DB conversation
+    if (input.conversationHistory.length === 0) {
       try {
         const { getDb } = await import("../db/connection.js");
         const { conversationSessions } = await import("../db/schema.js");
@@ -117,16 +140,11 @@ export async function processWithCommander(input: {
       } catch {}
     }
 
-    // ── Engine routing ────────────────────────────────────
-    const GREETING = /^(chào|hi|hello|hey|xin chào|ok|ừ|uh|cảm ơn|thanks|bye|👋)[\s!.?]*$/i;
-    const isGreeting = input.userMessage.trim().length < 20 && GREETING.test(input.userMessage.trim());
-    const engine: LLMEngine = isGreeting ? "fast-api" : "claude-sdk";
-
     log.logEngine(engine, []);
     log.logContext(ctx);
     log.logHistory(ctx, input.conversationHistory.length, input.conversationHistory.length, !!dbSummary);
 
-    // ── Step 2: SDK query ─────────────────────────────────
+    // ── Step 2: Anthropic API query ───────────────────────
     await input.onProgress?.("🤖 Đang suy nghĩ...");
 
     const toolCtx = { sessionId: input.sessionId ?? "", currentUser: ctx.currentUser };
@@ -135,8 +153,8 @@ export async function processWithCommander(input: {
     const runner = new AgentRunner({
       agent: commander.agent,
       engine,
-      tools: [],
-      systemPrompt,
+      tools: AGENT_TOOLS,
+      systemPrompt: systemPrompt + knowledgeContext,
       tenantId: input.tenantId,
       userId: input.userId,
       dbSummary,
@@ -149,13 +167,13 @@ export async function processWithCommander(input: {
         try {
           toolResult = await executeTool(tool, args, input.tenantId, toolCtx);
         } catch (e: any) {
-          try { toolResult = await executeTool(tool, args, input.tenantId, toolCtx); }
-          catch (e2: any) { toolResult = { error: `Tool ${tool} lỗi: ${e2.message}` }; }
+          toolResult = { error: `Tool ${tool} lỗi: ${e.message}` };
         }
 
         // Truncate large results
-        if (JSON.stringify(toolResult).length > 3000) {
-          toolResult = { ...toolResult, _truncated: true };
+        const resultStr = JSON.stringify(toolResult);
+        if (resultStr.length > 3000) {
+          toolResult = { _truncated: true, _originalLength: resultStr.length, _preview: resultStr.substring(0, 2900) };
         }
 
         log.logToolCall(toolCallCount, tool, args, toolResult, Date.now() - toolStart);
@@ -179,7 +197,7 @@ export async function processWithCommander(input: {
     for (const tc of ctx.toolCalls) {
       await botLog({ ...logBase, type: "tool_call", content: `${tc.tool}(${JSON.stringify(tc.args).substring(0, 200)})`, metadata: { tool: tc.tool } });
     }
-    await botLog({ ...logBase, userId: input.userId, userName: input.userName, type: "bot_response", content: ctx.text, metadata: { elapsed: Date.now() - startTime, toolCount: ctx.toolCalls.length, engine, sdkSessionId: result.sdkSessionId } });
+    await botLog({ ...logBase, userId: input.userId, userName: input.userName, type: "bot_response", content: ctx.text, metadata: { elapsed: Date.now() - startTime, toolCount: ctx.toolCalls.length, engine } });
 
     return { text: ctx.text, files: _files };
 

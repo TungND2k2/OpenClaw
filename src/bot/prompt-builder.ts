@@ -7,6 +7,7 @@ import { getToolListForPrompt } from "./tool-registry.js";
 export function buildCommanderPrompt(
   tenantName: string, userName: string, userRole: string,
   aiConfig: Record<string, unknown>,
+  nativeTools = false,
 ): string {
   const cfg = aiConfig as any;
   const botName = cfg.bot_name ?? "Bot";
@@ -18,12 +19,11 @@ export function buildCommanderPrompt(
 
   // Tool list from REGISTRY (source of truth)
   const toolList = getToolListForPrompt();
-  const toolInstructions = `Tools có sẵn (gọi bằng JSON block \`\`\`tool_calls):
-
-${toolList}
-Format: \`\`\`tool_calls
-[{"tool":"tên_tool","args":{"key":"value"}}]
-\`\`\``;
+  // Native tools (Anthropic API): just list names, no format block needed
+  // Text tools (fast-api): include full format instructions
+  const toolInstructions = nativeTools
+    ? `Tools có sẵn:\n${toolList}`
+    : `Tools có sẵn (gọi bằng JSON block \`\`\`tool_calls):\n\n${toolList}\nFormat: \`\`\`tool_calls\n[{"tool":"tên_tool","args":{"key":"value"}}]\n\`\`\``;
 
   const rulesText = rules.length > 0
     ? rules.map((r: string) => `• ${r}`).join("\n")
