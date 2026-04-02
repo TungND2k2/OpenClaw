@@ -28,6 +28,7 @@ export const agentTemplates = pgTable(
     costBudgetUsd: real("cost_budget_usd"),
     autoSpawn: boolean("auto_spawn").notNull().default(false),
     autoSpawnCount: integer("auto_spawn_count").notNull().default(1),
+    tenantId: text("tenant_id"),
     status: text("status").notNull().default("active"),
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
     updatedAt: bigint("updated_at", { mode: "number" }).notNull(),

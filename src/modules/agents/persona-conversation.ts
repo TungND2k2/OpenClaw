@@ -28,8 +28,16 @@ export interface PersonaMessage {
  */
 export async function getPersonas(tenantId?: string): Promise<Persona[]> {
   const db = getDb();
+
+  if (!tenantId) return [];
+
   const templates = await db.select().from(agentTemplates)
-    .where(eq(agentTemplates.status, "active"));
+    .where(
+      and(
+        eq(agentTemplates.status, "active"),
+        eq((agentTemplates as any).tenantId, tenantId),
+      )
+    );
 
   return templates
     .filter(t => t.role !== "commander")

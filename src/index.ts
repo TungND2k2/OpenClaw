@@ -8,7 +8,10 @@ import { startProxy, stopProxy } from "./proxy/proxy.service.js";
 import { startTelegramBot, stopTelegramBot } from "./bot/telegram.bot.js";
 import { initAgentPool } from "./modules/agents/agent-pool.js";
 import { executeTool } from "./bot/agent-bridge.js";
-import { cleanupDuplicateRules } from "./modules/knowledge/knowledge.service.js";
+// knowledge.service removed
+import { initResourceCache } from "./modules/cache/resource-cache.js";
+import { onEvent } from "./modules/events/event-bus.js";
+import { handleEvent } from "./modules/events/event-handler.js";
 
 async function main() {
   // 1. Load config
@@ -20,14 +23,18 @@ async function main() {
   console.error("[OpenClaw] Database ready");
 
   // 3. Initialize Agent Pool (Commander + Workers in DB)
-  const pool = initAgentPool({
-    workerCount: 3,
+  await initAgentPool({
     toolExecutor: executeTool,
   });
   console.error(`[OpenClaw] Agent pool ready`);
 
-  // 3b. Cleanup duplicate knowledge rules
-  await cleanupDuplicateRules();
+  // 3b. Knowledge cleanup removed — using bot_docs
+
+  // 3c. Build resource cache for all tenants
+  await initResourceCache();
+
+  // 3d. Wire event bus
+  onEvent(handleEvent);
 
   // 4. Create MCP server
   const server = createMcpServer();
@@ -36,13 +43,17 @@ async function main() {
   // 5. Start orchestrator tick loop
   startOrchestrator();
 
-  // 5. Start LLM proxy (if configured)
+  // 6. Start LLM proxy (if configured)
   startProxy();
 
-  // 6. Start Telegram bot (if configured)
+  // 7. Start Telegram bot (if configured)
   await startTelegramBot();
 
-  // 7. Start stdio transport
+  // 8. Start Dashboard API
+  const { startDashboardAPI } = await import("./api/dashboard.js");
+  startDashboardAPI(3102);
+
+  // 9. Start stdio transport
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("[OpenClaw] Stdio transport connected — ready!");

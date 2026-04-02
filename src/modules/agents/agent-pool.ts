@@ -23,8 +23,10 @@ import { eq } from "drizzle-orm";
 
 export const AGENT_TOOLS: ToolDefinition[] = [
   { name: "list_workflows", description: "Xem danh sách quy trình", parameters: { type: "object", properties: { limit: { type: "number" } } } },
-  { name: "create_workflow", description: "Tạo quy trình mới", parameters: { type: "object", properties: { name: { type: "string" }, description: { type: "string" }, domain: { type: "string" }, stages: { type: "array" } }, required: ["name", "stages"] } },
+  { name: "create_workflow", description: "Tạo quy trình mới", parameters: { type: "object", properties: { name: { type: "string" }, description: { type: "string" }, domain: { type: "string" }, stages: { type: "array", items: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, type: { type: "string", description: "form | approval | notification | auto" }, description: { type: "string" }, form_id: { type: "string" }, assignee_role: { type: "string" }, checklist: { type: "array", items: { type: "string" } }, deadline_hours: { type: "number" }, required_fields: { type: "array", items: { type: "string" } }, notes: { type: "string" }, next_stage_id: { type: "string" } }, additionalProperties: true } } }, required: ["name", "stages"] } },
+  { name: "update_workflow", description: "Cập nhật workflow đã có (dùng khi tên đã tồn tại)", parameters: { type: "object", properties: { workflow_id: { type: "string" }, name: { type: "string" }, description: { type: "string" }, domain: { type: "string" }, stages: { type: "array", items: { type: "object", properties: { id: { type: "string" }, name: { type: "string" }, type: { type: "string" }, description: { type: "string" }, form_id: { type: "string" }, assignee_role: { type: "string" }, checklist: { type: "array", items: { type: "string" } }, deadline_hours: { type: "number" }, required_fields: { type: "array", items: { type: "string" } }, notes: { type: "string" }, next_stage_id: { type: "string" } }, additionalProperties: true } }, status: { type: "string" } } } },
   { name: "create_form", description: "Tạo form mới", parameters: { type: "object", properties: { name: { type: "string" }, fields: { type: "array" } }, required: ["name", "fields"] } },
+  { name: "update_form", description: "Cập nhật form đã có (dùng khi tên đã tồn tại)", parameters: { type: "object", properties: { form_id: { type: "string" }, name: { type: "string" }, fields: { type: "array" }, status: { type: "string" } } } },
   { name: "create_rule", description: "Tạo business rule", parameters: { type: "object", properties: { name: { type: "string" }, domain: { type: "string" }, rule_type: { type: "string" }, conditions: { type: "object" }, actions: { type: "array" } }, required: ["name"] } },
   { name: "save_tutorial", description: "Lưu tutorial", parameters: { type: "object", properties: { title: { type: "string" }, content: { type: "string" }, target_role: { type: "string" }, domain: { type: "string" } }, required: ["title", "content"] } },
   { name: "save_knowledge", description: "Lưu knowledge", parameters: { type: "object", properties: { type: { type: "string" }, title: { type: "string" }, content: { type: "string" }, domain: { type: "string" }, tags: { type: "array" } }, required: ["title", "content"] } },
@@ -212,12 +214,12 @@ class AgentPool {
   private async seedDefaults(): Promise<void> {
     const existing = await listTemplates();
     if (existing.length > 0) {
-      // Ensure Commander template uses claude-cli
-      const cmdTmpl = existing.find(t => t.role === "commander" && t.engine !== "claude-cli");
+      // Ensure Commander template uses claude-sdk
+      const cmdTmpl = existing.find(t => t.role === "commander" && t.engine !== "claude-sdk");
       if (cmdTmpl) {
         const { updateTemplate } = await import("./template.service.js");
-        await updateTemplate(cmdTmpl.id, { engine: "claude-cli" });
-        console.error("[AgentPool] Updated Commander template → claude-cli");
+        await updateTemplate(cmdTmpl.id, { engine: "claude-sdk" });
+        console.error("[AgentPool] Updated Commander template → claude-sdk");
       }
       return;
     }
@@ -230,7 +232,7 @@ class AgentPool {
       systemPrompt: "Bạn là Commander — bộ não trung tâm. Phân tích yêu cầu, phân rã task phức tạp, giao cho Workers/Supervisors, tổng hợp kết quả.",
       capabilities: ["reasoning", "planning", "decomposition", "knowledge", "file-analysis"],
       tools: [], // all tools
-      engine: "claude-cli",
+      engine: "claude-sdk",
       maxConcurrentTasks: 5,
       autoSpawn: true,
       autoSpawnCount: 1,
@@ -316,7 +318,8 @@ export function getRunnerByAgentId(agentId: string): AgentRunner | null { return
 export function getToolDefinitions(): ToolDefinition[] { return agentPool.getToolDefinitions(); }
 
 // Backward compat: old init function redirects to new pool
-export async function initAgentPool(config: { workerCount?: number; toolExecutor: any }): Promise<{ commander: AgentRunner; workers: AgentRunner[] }> {
+// Note: workerCount is ignored — worker count is controlled by autoSpawnCount in agent templates.
+export async function initAgentPool(config: { toolExecutor: any }): Promise<{ commander: AgentRunner; workers: AgentRunner[] }> {
   await agentPool.init({ toolExecutor: config.toolExecutor });
   return {
     commander: agentPool.getCommander()!,

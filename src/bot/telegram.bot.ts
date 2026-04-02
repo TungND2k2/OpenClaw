@@ -13,12 +13,11 @@ import { getConfig } from "../config.js";
 import { processWithCommander } from "./agent-bridge.js";
 import { MessageQueue, type QueueJob } from "./message-queue.js";
 import { getOrCreateSession, appendMessage } from "../modules/conversations/conversation.service.js";
-import { listFiles } from "../modules/storage/s3.service.js";
+import { listFiles, downloadAndUpload } from "../modules/storage/s3.service.js";
 import { getTenant } from "../modules/tenants/tenant.service.js";
 import { getDb } from "../db/connection.js";
 import { tenantUsers } from "../db/schema.js";
 import { newId } from "../utils/id.js";
-import { downloadAndUpload } from "../modules/storage/s3.service.js";
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
 let _running = false;
@@ -46,13 +45,6 @@ async function callTelegramWithToken(token: string, method: string, params: Reco
   const body = await res.json() as { ok: boolean; result?: any; description?: string };
   if (!body.ok) throw new Error(`Telegram: ${body.description}`);
   return body.result;
-}
-
-// Backward-compatible wrapper — uses first bot's token or config
-async function callTelegram(method: string, params: Record<string, unknown>): Promise<any> {
-  const token = getConfig().TELEGRAM_BOT_TOKEN ?? _bots.values().next().value?.token;
-  if (!token) throw new Error("No bot token");
-  return callTelegramWithToken(token, method, params);
 }
 
 async function sendTelegramMessage(chatId: string | number, text: string, token?: string): Promise<number | undefined> {
@@ -99,22 +91,6 @@ async function sendTelegramFile(chatId: string | number, fileUrl: string, fileNa
   } catch {
     await sendTelegramMessage(chatId, `📎 <a href="${fileUrl}">${fileName}</a>${caption ? "\n" + caption : ""}`, t);
   }
-}
-
-/**
- * Send "typing..." indicator to Telegram chat.
- */
-async function sendTyping(chatId: string | number): Promise<void> {
-  try {
-    const token = getConfig().TELEGRAM_BOT_TOKEN;
-    if (!token) return;
-    await fetch(`${TELEGRAM_API}${token}/sendChatAction`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, action: "typing" }),
-      signal: AbortSignal.timeout(5000),
-    });
-  } catch {}
 }
 
 /**
@@ -302,28 +278,36 @@ async function handleJob(job: QueueJob): Promise<void> {
 
   await appendMessage(session.id, { role: "user", content: job.text, at: Date.now() });
 
-  // ── Auto-summarize if history too long ──
+  // ── Auto-compact if history too long (pattern from OpenClaw) ──
   try {
-    const { autoSummarize } = await import("../modules/conversations/conversation.service.js");
-    await autoSummarize(session.id, async (text: string) => {
-      // Use fast API to summarize (cheap + fast)
-      const { callFastAPI } = await import("../modules/agents/agent-runner.js");
+    const { compactSession } = await import("../modules/context/compactor.js");
+    const { callFastAPI } = await import("../modules/agents/agent-runner.js");
+    const result = await compactSession(session.id, async (text: string) => {
       return await callFastAPI(
-        "Tóm tắt ngắn gọn hội thoại sau (giữ lại tất cả data quan trọng: tên, số, ID, trạng thái):\n\n" + text,
+        "Tóm tắt ngắn gọn hội thoại sau. Giữ lại: tên, số, ID, trạng thái, quy trình. Bỏ: lời chào, câu hỏi lặp.\n\n" + text,
         "Bạn là bot tóm tắt. Trả về 1 paragraph ngắn gọn.",
         [],
       );
     });
-  } catch {}
+    if (result.compacted) {
+      console.error(`[Compact] ${result.summarizedCount} messages → summary, kept ${result.keptCount}`);
+    }
+  } catch (e: any) {
+    console.error(`[Compact] Error: ${e.message}`);
+  }
 
-  // ── Build optimized history (summary + recent + form state) ──
-  const { buildOptimizedHistory } = await import("../modules/conversations/conversation.service.js");
-  // Re-fetch session after potential summarization
+  // ── Build history from session ──
   const freshSession = await getOrCreateSession({
     tenantId: job.tenantId, channel: "telegram",
     channelUserId: job.userId, userName: job.userName, userRole: job.userRole,
   });
-  const { history } = buildOptimizedHistory(freshSession);
+  const state = (typeof freshSession.state === "string" ? JSON.parse(freshSession.state) : freshSession.state) as any;
+  const messages = state?.messages ?? [];
+  const summary = state?.summary ?? "";
+  const history = [
+    ...(summary ? [{ role: "system" as const, content: `[TÓM TẮT]\n${summary}` }] : []),
+    ...messages.map((m: any) => ({ role: m.role as string, content: m.content as string })),
+  ];
 
   // ── Send progress message immediately ──
   const tk = job.botToken;
@@ -344,7 +328,14 @@ async function handleJob(job: QueueJob): Promise<void> {
       try { await callTelegramWithToken(tk, "deleteMessage", { chat_id: job.chatId, message_id: progressMsgId }); } catch {}
       personaStreamed = true;
     }
-    const formatted = markdownToTelegramHtml(`${pm.emoji} <b>${pm.name}:</b>\n${pm.content}`);
+    // Unicode bold name + separator for visual prominence
+    const boldName = pm.name.split("").map(c => {
+      const code = c.charCodeAt(0);
+      if (code >= 65 && code <= 90) return String.fromCodePoint(0x1D5D4 + code - 65); // 𝗔-𝗭
+      if (code >= 97 && code <= 122) return String.fromCodePoint(0x1D5EE + code - 97); // 𝗮-𝘇
+      return c;
+    }).join("");
+    const formatted = markdownToTelegramHtml(`───────────────────\n${pm.emoji} ${boldName}\n───────────────────\n${pm.content}`);
     await sendTelegramMessage(job.chatId, formatted, tk);
   };
 
@@ -580,6 +571,31 @@ async function processUpdate(
             return;
           }
 
+          // ── SSH confirm/cancel ──
+          const confirmMatch = msg.text.match(/^\/confirm\s+(\S+)$/i);
+          if (confirmMatch) {
+            const { getPendingExec, deletePendingExec, executeSSH } = await import("../modules/ssh/ssh.service.js");
+            const pending = getPendingExec(confirmMatch[1]);
+            if (!pending) { await send(msg.chat.id, "❌ Không tìm thấy lệnh chờ hoặc đã hết hạn"); return; }
+            if (pending.requestedBy !== userId) { await send(msg.chat.id, "❌ Chỉ người yêu cầu mới confirm được"); return; }
+            deletePendingExec(confirmMatch[1]);
+            await send(msg.chat.id, `⚡ Đang thực thi: <code>${pending.command}</code>`);
+            const result = await executeSSH({ host: pending.host, port: pending.port, user: pending.user, command: pending.command });
+            const output = result.stdout ? `<pre>${result.stdout.substring(0, 3000)}</pre>` : "(không có output)";
+            await send(msg.chat.id, `✅ Hoàn thành (exit: ${result.exitCode})\n${output}${result.stderr ? `\n⚠️ ${result.stderr.substring(0, 500)}` : ""}`);
+            return;
+          }
+
+          const cancelMatch = msg.text.match(/^\/cancel\s+(\S+)$/i);
+          if (cancelMatch) {
+            const { getPendingExec, deletePendingExec } = await import("../modules/ssh/ssh.service.js");
+            const pending = getPendingExec(cancelMatch[1]);
+            if (!pending) { await send(msg.chat.id, "❌ Không tìm thấy lệnh chờ"); return; }
+            deletePendingExec(cancelMatch[1]);
+            await send(msg.chat.id, `🚫 Đã huỷ lệnh: <code>${pending.command}</code>`);
+            return;
+          }
+
           // ── Permission commands: /grant, /deny, /revoke ──
           const { grantPermission: gp, revokePermission: rvk, resolvePermissionRequest: rpr, getPendingRequests: gpr } = await import("../modules/permissions/permission.service.js");
 
@@ -667,7 +683,7 @@ async function processUpdate(
         // ── Handle file uploads ──
         const fileObj = msg.document ?? msg.photo?.at(-1) ?? msg.video ?? msg.audio ?? msg.voice;
         if (fileObj && getConfig().S3_BUCKET) {
-          handleFileUpload(msg, fileObj, userId, userName, tenantId).catch(
+          handleFileUpload(msg, fileObj, userId, userName, tenantId, botToken).catch(
             (e: any) => console.error(`[Bot] File upload error: ${e.message}`)
           );
           return;
@@ -706,7 +722,8 @@ async function handleFileUpload(
   fileObj: any,
   userId: string,
   userName: string,
-  tenantId: string
+  tenantId: string,
+  botToken?: string,
 ): Promise<void> {
   const chatId = msg.chat.id;
   const isPhoto = !!msg.photo;
@@ -715,21 +732,23 @@ async function handleFileUpload(
   const fileName = fileObj.file_name ?? (isPhoto ? `photo_${Date.now()}.jpg` : `file_${Date.now()}`);
   const mimeType = fileObj.mime_type ?? (isPhoto ? "image/jpeg" : "application/octet-stream");
 
+  const tk = botToken;
+
   // Size check
   if (fileSize > MAX_FILE_SIZE) {
-    await sendTelegramMessage(chatId, `⚠️ File quá lớn (${(fileSize / 1024 / 1024).toFixed(1)}MB). Tối đa 20MB.`);
+    await sendTelegramMessage(chatId, `⚠️ File quá lớn (${(fileSize / 1024 / 1024).toFixed(1)}MB). Tối đa 20MB.`, tk);
     return;
   }
 
   // Type check
   const allowed = ALLOWED_MIME_PREFIXES.some((p) => mimeType.startsWith(p));
   if (!allowed) {
-    await sendTelegramMessage(chatId, `⚠️ Loại file không hỗ trợ: ${mimeType}`);
+    await sendTelegramMessage(chatId, `⚠️ Loại file không hỗ trợ: ${mimeType}`, tk);
     return;
   }
 
   console.error(`[Bot] File from ${userName}: ${fileName} (${(fileSize / 1024).toFixed(1)}KB, ${mimeType})`);
-  await sendTelegramMessage(chatId, `📤 Đang upload <b>${fileName}</b>...`);
+  await sendTelegramMessage(chatId, `📤 Đang upload <b>${fileName}</b>...`, tk);
 
   try {
     // Get file URL from Telegram — find token for this tenant
@@ -753,11 +772,63 @@ async function handleFileUpload(
       ? `${(fileSize / 1024 / 1024).toFixed(1)}MB`
       : `${(fileSize / 1024).toFixed(1)}KB`;
 
+    // ── Auto-analyze file ──────────────────────────────
+    const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test(fileName) || mimeType.startsWith("image/");
+    let analysis = "";
+    try {
+      const { executeTool } = await import("./tool-registry.js");
+      const toolCtx = { sessionId: "", currentUser: { id: userId, name: userName, role: "user" } };
+      // Step 1: Extract raw content
+      let rawContent = "";
+      if (isImage) {
+        const r = await executeTool("analyze_image", { file_id: result.id }, tenantId, toolCtx);
+        rawContent = typeof r === "string" ? r : (r as any)?.content ?? (r as any)?.description ?? JSON.stringify(r);
+      } else {
+        const r = await executeTool("read_file_content", { file_id: result.id }, tenantId, toolCtx);
+        rawContent = typeof r === "string" ? r : (r as any)?.content ?? JSON.stringify(r);
+      }
+
+      // Step 2: LLM analyze — send full content (up to 12K chars)
+      const { callFastAPI } = await import("../modules/agents/agent-runner.js");
+      analysis = await callFastAPI(
+        `Phân tích chi tiết file "${fileName}". Trích xuất TẤT CẢ thông tin:\n` +
+        `- Thông tin khách hàng (tên, SĐT, email, địa chỉ)\n` +
+        `- Danh sách sản phẩm (tên, mô tả, size, số lượng, đơn giá, thành tiền)\n` +
+        `- Tổng giá trị, đặt cọc, còn nợ, phí ship\n` +
+        `- Điều khoản thanh toán, thời gian giao hàng\n` +
+        `- Thông tin ngân hàng nếu có\n` +
+        `- Bất kỳ thông tin quan trọng nào khác\n\n` +
+        `Trình bày đầy đủ, rõ ràng, KHÔNG bỏ sót, KHÔNG tóm tắt quá ngắn.\n\n` +
+        `NỘI DUNG FILE:\n${rawContent.substring(0, 12000)}`,
+        "Bạn là trợ lý phân tích tài liệu chuyên nghiệp. Trả lời bằng tiếng Việt. Liệt kê đầy đủ mọi chi tiết từ file.",
+        [],
+      );
+      console.error(`[Bot] Auto-analyzed ${fileName}: ${analysis.length} chars`);
+    } catch (e: any) {
+      console.error(`[Bot] Auto-analyze failed: ${e.message}`);
+      analysis = `File ${fileName} uploaded but could not be analyzed.`;
+    }
+
+    // Store in user file context map
+    const { setUserFile } = await import("../modules/context/user-file-context.js");
+    setUserFile(tenantId, userId, {
+      fileId: result.id,
+      fileName,
+      mimeType,
+      isImage,
+      analysis,
+      uploadedAt: Date.now(),
+    });
+
+    // Show full analysis to user
+    const safeAnalysis = analysis.replace(/</g, "&lt;").replace(/>/g, "&gt;");
     await sendTelegramMessage(chatId,
-      `✅ <b>File đã lưu</b>\n` +
+      `✅ <b>File đã lưu + phân tích</b>\n` +
       `📎 ${fileName} (${sizeStr})\n` +
-      `🔗 ID: <code>${result.id}</code>` +
-      (caption ? `\n📝 ${caption}` : "")
+      `🔗 ID: <code>${result.id}</code>\n\n` +
+      safeAnalysis +
+      (caption ? `\n\n📝 ${caption}` : ""),
+      tk,
     );
 
     // If has caption, process it as a message with file context
@@ -956,4 +1027,18 @@ export function stopTelegramBot(): void {
 
 export function getQueueMetrics() {
   return _queue?.getMetrics() ?? null;
+}
+
+/**
+ * Send cron notification to a user via their tenant's bot.
+ * Used by orchestrator when cron tasks fire.
+ */
+export async function sendCronNotification(tenantId: string, userId: string, message: string): Promise<void> {
+  const bot = _bots.get(tenantId);
+  if (!bot) return;
+  try {
+    await sendTelegramMessage(userId, message, bot.token);
+  } catch (err: any) {
+    console.error(`[Cron] Notification failed (${userId}): ${err.message}`);
+  }
 }

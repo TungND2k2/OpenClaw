@@ -72,7 +72,7 @@ export async function uploadFile(input: {
     Metadata: {
       "tenant-id": input.tenantId,
       "uploaded-by": input.uploadedBy,
-      "original-name": input.fileName,
+      "original-name": encodeURIComponent(input.fileName),
     },
   }));
 
@@ -204,10 +204,10 @@ export async function readFileContent(fileId: string): Promise<{
     content = `[Binary file: ${file.fileName} (${file.mimeType}, ${file.fileSize} bytes)]`;
   }
 
-  // Truncate to ~4000 chars to fit in LLM context
-  const MAX_LEN = 4000;
+  // Keep full content — LLM analysis will summarize, not truncate raw
+  const MAX_LEN = 15000;
   const truncated = content.length > MAX_LEN;
-  if (truncated) content = content.substring(0, MAX_LEN) + "\n\n... [truncated]";
+  if (truncated) content = content.substring(0, MAX_LEN) + "\n\n... [truncated — file quá dài]";
 
   console.error(`[S3] Read content: ${file.fileName} (${content.length} chars${truncated ? ", truncated" : ""})`);
 

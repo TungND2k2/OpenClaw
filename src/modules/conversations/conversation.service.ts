@@ -88,7 +88,7 @@ export async function appendMessage(sessionId: string, message: ChatMessage): Pr
   state.messages.push(message);
 
   await db.update(conversationSessions).set({
-    state: JSON.stringify(state),
+    state: state as any,
     lastMessageAt: now,
   }).where(eq(conversationSessions.id, sessionId));
 
@@ -117,7 +117,7 @@ export async function getSession(sessionId: string): Promise<ConversationSession
 // ── Conversation Summary ─────────────────────────────────────
 
 const SUMMARY_THRESHOLD = 10; // summarize every N messages
-const KEEP_RECENT = 5; // keep last N messages after summary
+const KEEP_RECENT = 20; // keep last N messages — enough for 19-step forms
 
 /**
  * Build optimized history: summary + recent messages + form state.
@@ -212,7 +212,7 @@ export async function autoSummarize(
   state.messages = toKeep;
 
   await db.update(conversationSessions).set({
-    state: JSON.stringify(state),
+    state: state as any,
     lastMessageAt: nowMs(),
   }).where(eq(conversationSessions.id, sessionId));
 
@@ -267,7 +267,7 @@ export async function startFormSession(
   state.formState = formState;
 
   await db.update(conversationSessions).set({
-    state: JSON.stringify(state),
+    state: state as any,
     lastMessageAt: nowMs(),
   }).where(eq(conversationSessions.id, sessionId));
 
@@ -309,7 +309,7 @@ export async function updateFormField(
   state.formState = formState;
 
   await db.update(conversationSessions).set({
-    state: JSON.stringify(state),
+    state: state as any,
     lastMessageAt: nowMs(),
   }).where(eq(conversationSessions.id, sessionId));
 
@@ -343,7 +343,7 @@ export async function cancelFormSession(sessionId: string): Promise<void> {
   }
 
   await db.update(conversationSessions).set({
-    state: JSON.stringify(state),
+    state: state as any,
     lastMessageAt: nowMs(),
   }).where(eq(conversationSessions.id, sessionId));
 }
