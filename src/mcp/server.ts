@@ -5,7 +5,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getRegisteredTools } from "../bot/tool-registry.js";
+import { getRegisteredTools, getToolDescriptions } from "../bot/tool-registry.js";
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({
@@ -13,14 +13,15 @@ export function createMcpServer(): McpServer {
     version: "0.6.0",
   });
 
-  // Auto-register ALL tools from the shared registry
+  // Auto-register ALL tools with proper descriptions
   const toolNames = getRegisteredTools();
+  const descriptions = getToolDescriptions();
 
   for (const name of toolNames) {
-    // Generic args schema — accept any JSON object
+    const desc = descriptions.get(name) ?? name;
     server.tool(
       name,
-      `OpenClaw tool: ${name}`,
+      desc,
       { input: z.record(z.any()).optional().describe("Tool arguments as key-value pairs") },
       async (params: Record<string, unknown>) => {
         const { executeTool } = await import("../bot/tool-registry.js");

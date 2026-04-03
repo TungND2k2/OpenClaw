@@ -95,6 +95,24 @@ registerTool("create_workflow", async (args, tenantId) => {
   return { id, name: args.name, stageCount: stages.length };
 });
 
+registerTool("get_form", async (args, tenantId) => {
+  const db = getDb();
+  const rows = await db.select().from(formTemplates)
+    .where(and(eq(formTemplates.tenantId, tenantId), eq(formTemplates.status, "active")));
+  if (args.name) {
+    const match = rows.find(r => r.name.toLowerCase().includes((args.name as string).toLowerCase()));
+    if (match) {
+      const schema = typeof match.schema === "string" ? JSON.parse(match.schema) : match.schema;
+      return { id: match.id, name: match.name, version: match.version, fields: (schema as any)?.fields ?? [] };
+    }
+    return { error: `Form "${args.name}" not found` };
+  }
+  return rows.map(r => {
+    const schema = typeof r.schema === "string" ? JSON.parse(r.schema) : r.schema;
+    return { id: r.id, name: r.name, version: r.version, fieldCount: ((schema as any)?.fields ?? []).length };
+  });
+});
+
 registerTool("create_form", async (args, tenantId) => {
   const db = getDb();
   const now = nowMs();
@@ -1076,3 +1094,64 @@ registerTool("unsubscribe_agent", async (args, tenantId) => {
   await deleteSubscription(args.subscription_id as string, tenantId);
   return { deleted: true };
 });
+
+// ── Tool Descriptions (for MCP + prompt) ──────────────────────
+
+const DESCS: Record<string, string> = {
+  list_workflows: "Xem danh sách quy trình (workflows)",
+  create_workflow: "Tạo quy trình mới. Args: name, description?, domain?, stages[{id,name,type}]",
+  update_workflow: "Cập nhật workflow. Args: workflow_id, name?, description?, stages?",
+  get_form: "Xem form template (tên, fields, required). Args: name? (nếu không có → list tất cả)",
+  create_form: "Tạo form mới. Args: name, fields[{id,label,type,required}]",
+  update_form: "Cập nhật form. Args: form_id, name?, fields?",
+  create_rule: "Tạo business rule. Args: name, rule_type, conditions, actions",
+  list_files: "Xem files đã upload. Args: limit?",
+  read_file_content: "Đọc nội dung file text (PDF/DOCX/XLSX/TXT). Args: file_id",
+  analyze_image: "Phân tích ảnh (vision). Args: file_id, prompt?",
+  get_file: "Xem metadata file. Args: file_id",
+  send_file: "Gửi file cho user. Args: file_id",
+  create_collection: "Tạo bảng dữ liệu mới. Args: name, description?, fields?",
+  list_collections: "Xem danh sách bảng",
+  add_row: "Thêm dòng vào bảng. Args: collection (tên bảng), data{key:value}",
+  list_rows: "Xem dữ liệu trong bảng. Args: collection, limit?, keyword?",
+  update_row: "Cập nhật dòng. Args: row_id, data{key:value}",
+  delete_row: "Xoá dòng. Args: row_id",
+  search_all: "Tìm kiếm across tất cả bảng. Args: keyword?, limit?",
+  list_users: "Xem danh sách users",
+  set_user_role: "Đổi role user. Args: channel_user_id, role",
+  db_query: "Generic DB query. Args: table (form_templates|workflow_templates|business_rules|collections|collection_rows), action (list|get|create|update|delete), filter?, data?",
+  get_dashboard: "Dashboard hệ thống",
+  get_ai_config: "Xem AI config",
+  update_ai_config: "Cập nhật AI config. Args: rules?, bot_name?, custom_instructions?",
+  save_doc: "Lưu kiến thức cho bot (append). Args: content, mode? (append|replace)",
+  get_doc: "Xem kiến thức bot đã học",
+  save_knowledge: "Lưu kiến thức (redirect → save_doc). Args: title, content",
+  start_form: "Bắt đầu điền form. Args: form_name",
+  update_form_field: "Lưu 1 field form vào DB. Args: field_name, value",
+  get_form_state: "Xem form đang điền (fields đã nhập, chưa nhập)",
+  cancel_form: "Huỷ form đang điền",
+  ssh_exec: "Chạy lệnh SSH trên server. Args: host, command, port?, user?",
+  ssh_confirm: "Xác nhận lệnh SSH chờ. Args: pending_id",
+  create_agent_template: "Tạo template agent/worker mới. Args: name, role, system_prompt",
+  list_agent_templates: "Xem agent templates",
+  spawn_agent: "Tạo agent từ template. Args: template_name?, count?",
+  kill_agent: "Tắt agent. Args: agent_id",
+  list_agents: "Xem agents đang chạy",
+  create_bot: "Tạo bot Telegram mới (Super Admin). Args: name, token, persona?",
+  list_bots: "Xem tất cả bots",
+  stop_bot: "Dừng bot. Args: tenant_id",
+  create_cron: "Tạo cron job. Args: name, schedule, action (tên tool), args?, notify_user_id?",
+  list_crons: "Xem cron jobs",
+  delete_cron: "Xoá cron. Args: cron_id",
+  start_workflow_instance: "Bắt đầu chạy workflow. Args: template_id",
+  get_instructions: "Xem instructions bot",
+  update_instructions: "Cập nhật instructions. Args: content, mode? (append|replace)",
+  subscribe_agent: "Subscribe agent vào event. Args: agent_template_id, event_pattern, action",
+  list_subscriptions: "Xem event subscriptions",
+  unsubscribe_agent: "Xoá subscription. Args: subscription_id",
+  request_permission: "Xin quyền. Args: resource, access?, reason?",
+};
+
+for (const [name, desc] of Object.entries(DESCS)) {
+  toolDescriptions.set(name, desc);
+}
