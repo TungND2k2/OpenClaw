@@ -28,6 +28,7 @@ export function createMcpServer(): McpServer {
         const tenantId = getConfig().TELEGRAM_DEFAULT_TENANT_ID ?? "";
         const args = (params.args as Record<string, unknown>) ?? params;
 
+        console.error(`[MCP] Tool: ${name} | Args: ${JSON.stringify(args).substring(0, 200)}`);
         try {
           const result = await executeTool(name, args, tenantId, {
             sessionId: "",
@@ -37,6 +38,7 @@ export function createMcpServer(): McpServer {
             content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
           };
         } catch (err: any) {
+          console.error(`[MCP] Error: ${name} → ${err.message}`);
           return {
             content: [{ type: "text" as const, text: `Error: ${err.message}` }],
             isError: true,
